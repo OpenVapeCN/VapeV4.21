@@ -26,21 +26,24 @@ public class ShieldBreaker extends Mod {
     private final TimerUtil timer = new TimerUtil();
     private final RandomValue switchDelay;
     private final RandomValue switchBackDelay;
+    private final RandomValue breakDelay;
 
     private int oldSlot = -1;
     private int pendingAxe = -1;
 
     private final BooleanValue autoSwitchBack;
+
     private boolean switching;
     private boolean switchPending;
     private boolean attackPending;
     private boolean releasePending;
 
-    private long attackDelay;
+    private long switchDelayMs;
+    private long breakDelayMs;
     private long switchBackDelayMs;
 
     public ShieldBreaker() {
-        super("ShieldBreaker", (int)MODULE_ID, Category.COMBAT, "Switch axe when attacking");
+        super("ShieldBreaker", (int)MODULE_ID, Category.COMBAT, "Auto Break Shield");
 
         this.switchDelay = RandomValue.createWithDescription(this, "Switch delay", "#", "ms", 0.0, 130.0, 180.0, 500.0, 0.1, "Automatically switch to an axe to disable shields");
 
@@ -48,9 +51,11 @@ public class ShieldBreaker extends Mod {
 
         this.switchBackDelay = RandomValue.createWithDescription(this, "Switch back delay", "#", "ms", 0.0, 130.0, 180.0, 500.0, 0.1, "Delay before switching back");
 
+        this.breakDelay = RandomValue.createWithDescription(this, "Break delay", "#", "ms", 0.0, 30.0, 50.0, 200.0, 1.0, "Delay when attacking with an axe");
+
         this.autoSwitchBack.addDependentValues(this.switchBackDelay);
 
-        this.addValue(this.switchDelay, this.autoSwitchBack, this.switchBackDelay);
+        this.addValue(this.switchDelay, this.autoSwitchBack, this.switchBackDelay, this.breakDelay);
 
         this.switchBackDelay.setMaximumFractionDigits(0);
     }
@@ -99,11 +104,7 @@ public class ShieldBreaker extends Mod {
         switching = true;
         switchPending = true;
 
-        double[] delayRange = this.switchDelay.getValue();
-
-        double randomDelay = delayRange[0] + Math.random() * (delayRange[1] - delayRange[0]);
-
-        attackDelay = (long)randomDelay;
+        switchDelayMs = getRandomDelay(this.switchDelay);
 
         timer.reset();
 
@@ -118,7 +119,8 @@ public class ShieldBreaker extends Mod {
             return;
 
         if(switchPending) {
-            if(!timer.hasTimeElapsed(attackDelay))
+
+            if(!timer.hasTimeElapsed(switchDelayMs))
                 return;
 
             Minecraft.thePlayer().V$src$Lgg_vape_wrapper_impl_InventoryPlayer_$erqak6().g(pendingAxe);
@@ -126,13 +128,16 @@ public class ShieldBreaker extends Mod {
             switchPending = false;
             attackPending = true;
 
+            breakDelayMs = getRandomDelay(this.breakDelay);
+
             timer.reset();
 
             return;
         }
 
         if(attackPending) {
-            if(!timer.hasTimeElapsed(50))
+
+            if(!timer.hasTimeElapsed(breakDelayMs))
                 return;
 
             AttackKeyController.releaseAttackKey();
@@ -142,19 +147,19 @@ public class ShieldBreaker extends Mod {
             attackPending = false;
             releasePending = true;
 
+            switchBackDelayMs = getRandomDelay(this.switchBackDelay);
+
             timer.reset();
 
             return;
         }
 
         if(releasePending) {
+
+            if(!timer.hasTimeElapsed(1))
+                return;
+
             AttackKeyController.releaseAttackKey();
-
-            double[] delayRange = this.switchBackDelay.getValue();
-
-            double randomDelay = delayRange[0] + Math.random() * (delayRange[1] - delayRange[0]);
-
-            switchBackDelayMs = (long)randomDelay;
 
             releasePending = false;
 
@@ -164,6 +169,7 @@ public class ShieldBreaker extends Mod {
         }
 
         if(!this.autoSwitchBack.getEffectiveValue()) {
+
             oldSlot = -1;
             pendingAxe = -1;
             switching = false;
@@ -184,11 +190,14 @@ public class ShieldBreaker extends Mod {
 
         switching = false;
 
+        switchDelayMs = 0;
+        breakDelayMs = 0;
         switchBackDelayMs = 0;
     }
 
     @Override
     public void onDisable() {
+
         super.onDisable();
 
         AttackKeyController.releaseAttackKey();
@@ -201,11 +210,25 @@ public class ShieldBreaker extends Mod {
         attackPending = false;
         releasePending = false;
 
-        attackDelay = 0;
+        switchDelayMs = 0;
+        breakDelayMs = 0;
         switchBackDelayMs = 0;
     }
 
+    private long getRandomDelay(RandomValue value) {
+
+        double[] delayRange = value.getValue();
+
+        if(delayRange[0] <= 0 && delayRange[1] <= 0)
+            return 0;
+
+        double randomDelay = delayRange[0] + Math.random() * (delayRange[1] - delayRange[0]);
+
+        return (long)randomDelay;
+    }
+
     private int findAxe() {
+
         for(int i = 0; i < 9; i++) {
 
             ItemStack stack = Minecraft.thePlayer().V$src$Lgg_vape_wrapper_impl_InventoryPlayer_$erqak6().c(i);

@@ -11,6 +11,7 @@ import gg.vape.module.Category;
 import gg.vape.module.Mod;
 import gg.vape.utils.RotationUtil;
 import gg.vape.utils.TimerUtil;
+import gg.vape.value.BooleanValue;
 import gg.vape.value.RandomValue;
 import gg.vape.wrapper.impl.EntityLivingBase;
 import gg.vape.wrapper.impl.EntityOtherPlayerMP;
@@ -29,6 +30,7 @@ public class ShieldBreaker extends Mod {
     private int oldSlot = -1;
     private int pendingAxe = -1;
 
+    private final BooleanValue autoSwitchBack;
     private boolean switching;
     private boolean switchPending;
     private boolean attackPending;
@@ -42,16 +44,19 @@ public class ShieldBreaker extends Mod {
 
         this.switchDelay = RandomValue.createWithDescription(this, "Switch delay", "#", "ms", 10.0, 130.0, 180.0, 500.0, 0.1, "Automatically switch to an axe to disable shields");
 
+        this.autoSwitchBack = BooleanValue.create(this, "Auto Switch back", true, "Auto switch original slot");
+
         this.switchBackDelay = RandomValue.createWithDescription(this, "Switch back delay", "#", "ms", 10.0, 130.0, 180.0, 500.0, 0.1, "Delay before switching back");
 
-        this.addValue(this.switchDelay, this.switchBackDelay);
+        this.autoSwitchBack.addDependentValues(this.switchBackDelay);
+
+        this.addValue(this.switchDelay, this.switchBackDelay, this.autoSwitchBack);
 
         this.switchBackDelay.setMaximumFractionDigits(0);
     }
 
     @EventHandler
     public void onMouseButton(EventMouseButton e) {
-
         if(e.isKeybinding(Minecraft.gameSettings().F()) && e.getButtonState())
             handleAttack(e);
     }
@@ -154,6 +159,14 @@ public class ShieldBreaker extends Mod {
             releasePending = false;
 
             timer.reset();
+
+            return;
+        }
+
+        if(!this.autoSwitchBack.getEffectiveValue()) {
+            oldSlot = -1;
+            pendingAxe = -1;
+            switching = false;
 
             return;
         }

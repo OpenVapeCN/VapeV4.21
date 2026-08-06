@@ -42,11 +42,11 @@ public class ShieldBreaker extends Mod {
     public ShieldBreaker() {
         super("ShieldBreaker", (int)MODULE_ID, Category.COMBAT, "Switch axe when attacking");
 
-        this.switchDelay = RandomValue.createWithDescription(this, "Switch delay", "#", "ms", 10.0, 130.0, 180.0, 500.0, 0.1, "Automatically switch to an axe to disable shields");
+        this.switchDelay = RandomValue.createWithDescription(this, "Switch delay", "#", "ms", 0.0, 130.0, 180.0, 500.0, 0.1, "Automatically switch to an axe to disable shields");
 
         this.autoSwitchBack = BooleanValue.create(this, "Auto Switch back", true, "Auto switch original slot");
 
-        this.switchBackDelay = RandomValue.createWithDescription(this, "Switch back delay", "#", "ms", 10.0, 130.0, 180.0, 500.0, 0.1, "Delay before switching back");
+        this.switchBackDelay = RandomValue.createWithDescription(this, "Switch back delay", "#", "ms", 0.0, 130.0, 180.0, 500.0, 0.1, "Delay before switching back");
 
         this.autoSwitchBack.addDependentValues(this.switchBackDelay);
 

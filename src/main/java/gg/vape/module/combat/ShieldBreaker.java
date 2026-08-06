@@ -50,7 +50,7 @@ public class ShieldBreaker extends Mod {
 
         this.autoSwitchBack.addDependentValues(this.switchBackDelay);
 
-        this.addValue(this.switchDelay, this.switchBackDelay, this.autoSwitchBack);
+        this.addValue(this.switchDelay, this.autoSwitchBack, this.switchBackDelay);
 
         this.switchBackDelay.setMaximumFractionDigits(0);
     }

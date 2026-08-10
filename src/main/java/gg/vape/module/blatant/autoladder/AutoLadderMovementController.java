@@ -3,17 +3,21 @@ package gg.vape.module.blatant.autoladder;
 import gg.vape.module.blatant.blockin.BlockPathPlanner;
 import gg.vape.module.blatant.blockin.BlockPlacementGraph;
 import gg.vape.movement.MovementInputHelper;
+import gg.vape.utils.BlockUtil;
 import gg.vape.utils.datas.BlockData;
 import gg.vape.wrapper.impl.AxisAlignedBB;
 import gg.vape.wrapper.impl.EntityPlayer;
 import gg.vape.wrapper.impl.EntityPlayerSP;
+import gg.vape.wrapper.impl.EnumFacing;
+import gg.vape.wrapper.impl.ForgeVersion;
 import gg.vape.wrapper.impl.GameSettings;
 import gg.vape.wrapper.impl.Minecraft;
 import gg.vape.wrapper.impl.World;
 
 /** Receding-horizon movement controller used while creating and catching the ladder. */
 public final class AutoLadderMovementController {
-    private static final double LADDER_THICKNESS = 0.1875;
+    private static final double LEGACY_LADDER_THICKNESS = 0.125;
+    private static final double MODERN_LADDER_THICKNESS = 0.1875;
     private static final CatchInput[] INPUTS = new CatchInput[]{
             new CatchInput(false, false, false, false),
             new CatchInput(true, false, false, false),
@@ -30,7 +34,7 @@ public final class AutoLadderMovementController {
     }
 
     public static CatchInput choose(EntityPlayerSP player, World world, AutoLadderPlan plan) {
-        if (player.boolean_S() || isCatchableNow(player, plan)) {
+        if (isSecureCatch(player, world, plan)) {
             return INPUTS[0];
         }
         int horizon = estimateCatchHorizon(player, plan);
@@ -53,8 +57,8 @@ public final class AutoLadderMovementController {
         simulation.applySnapshot(graph);
         simulation.setInput(input.forward, input.backward, input.left, input.right, false, false);
         EntityPlayer simulatedPlayer = simulation.getSimulatedPlayer();
-        int firstCatchTick = -1;
-        int caughtTicks = 0;
+        int firstSecureCatchTick = -1;
+        int secureCatchTicks = 0;
         double bestInterceptScore = Double.POSITIVE_INFINITY;
         for (int tick = 1; tick <= horizon; ++tick) {
             simulation.simulateTick(false);
@@ -64,21 +68,21 @@ public final class AutoLadderMovementController {
             int playerBlockY = (int)Math.floor(simulatedPlayer.N() + 1.0E-4);
             int ladderY = plan.getLadderBlock().B();
             double verticalMiss = playerBlockY == ladderY ? 0.0 : Math.abs(playerBlockY - ladderY);
-            bestInterceptScore = Math.min(bestInterceptScore,
-                    horizontalDistanceSq * 1000.0 + verticalMiss * 20000.0 + tick * 10.0);
-            if (simulatedPlayer.boolean_S()
-                    && simulatedPlayer.getFallDistance() <= 0.5f) {
-                if (firstCatchTick == -1) {
-                    firstCatchTick = tick;
+            if (isSecureCatch(simulatedPlayer, world, plan)) {
+                if (firstSecureCatchTick == -1) {
+                    firstSecureCatchTick = tick;
                 }
-                ++caughtTicks;
+                ++secureCatchTicks;
             }
-            if (firstCatchTick == -1 && simulatedPlayer.b$src$Z$fqlxe4()) {
+            if (firstSecureCatchTick == -1 && simulatedPlayer.b$src$Z$fqlxe4()) {
                 return Double.POSITIVE_INFINITY;
             }
-            if (firstCatchTick == -1 && isAboveSupportTop(simulatedPlayer, plan.getSupportBlock())) {
-                bestInterceptScore += 250000.0;
+            double interceptScore = horizontalDistanceSq * 1000.0
+                    + verticalMiss * 20000.0 + tick * 10.0;
+            if (firstSecureCatchTick == -1) {
+                interceptScore += supportTopRisk(simulatedPlayer, plan.getSupportBlock());
             }
+            bestInterceptScore = Math.min(bestInterceptScore, interceptScore);
         }
 
         double deltaX = plan.getCatchX() - simulatedPlayer.z();
@@ -86,8 +90,8 @@ public final class AutoLadderMovementController {
         double horizontalDistanceSq = deltaX * deltaX + deltaZ * deltaZ;
         double velocityTowardTarget = simulatedPlayer.t() * deltaX + simulatedPlayer.T() * deltaZ;
         double overshootPenalty = Math.max(0.0, -velocityTowardTarget) * 2500.0;
-        if (firstCatchTick != -1) {
-            return -100000.0 + firstCatchTick * 10000.0 - caughtTicks * 1500.0
+        if (firstSecureCatchTick != -1) {
+            return -150000.0 + firstSecureCatchTick * 10000.0 - secureCatchTicks * 2000.0
                     + horizontalDistanceSq * 100.0 + overshootPenalty;
         }
         if (simulatedPlayer.N() < plan.getLadderBlock().B() - 0.05) {
@@ -96,13 +100,17 @@ public final class AutoLadderMovementController {
         return bestInterceptScore + horizontalDistanceSq * 200.0 + overshootPenalty;
     }
 
+    private static boolean isSecureCatch(EntityPlayer player, World world, AutoLadderPlan plan) {
+        return player.boolean_S() && isCatchableNow(player, world, plan);
+    }
+
     private static int estimateCatchHorizon(EntityPlayerSP player, AutoLadderPlan plan) {
         double y = player.N();
         double motionY = player.q();
-        double targetY = plan.getLadderBlock().B() + 0.95;
+        double passedLadderY = plan.getLadderBlock().B() - 0.05;
         for (int tick = 1; tick <= 6; ++tick) {
             y += motionY;
-            if (y <= targetY) {
+            if (y < passedLadderY) {
                 return tick;
             }
             motionY = (motionY - 0.08) * 0.98;
@@ -110,33 +118,52 @@ public final class AutoLadderMovementController {
         return 6;
     }
 
-    public static boolean isCatchableNow(EntityPlayer player, AutoLadderPlan plan) {
+    public static boolean isCatchableNow(EntityPlayer player, World world, AutoLadderPlan plan) {
         AxisAlignedBB bounds = player.u$src$Lgg_vape_wrapper_impl_AxisAlignedBB_$kogbsu();
-        BlockData ladder = plan.getLadderBlock();
-        if (bounds.getMaxY() <= ladder.B() || bounds.getMinY() >= ladder.B() + 1.0) {
-            return false;
-        }
-        int directionX = plan.getLadderFacing().getDirectionVector().getX();
-        int directionZ = plan.getLadderFacing().getDirectionVector().getZ();
-        if (directionX > 0) {
-            return intersects(bounds.getMinX(), bounds.getMaxX(), ladder.D(),
-                    ladder.D() + LADDER_THICKNESS)
-                    && intersects(bounds.getMinZ(), bounds.getMaxZ(), ladder.G(), ladder.G() + 1.0);
-        }
-        if (directionX < 0) {
-            return intersects(bounds.getMinX(), bounds.getMaxX(),
-                    ladder.D() + 1.0 - LADDER_THICKNESS, ladder.D() + 1.0)
-                    && intersects(bounds.getMinZ(), bounds.getMaxZ(), ladder.G(), ladder.G() + 1.0);
-        }
-        if (directionZ > 0) {
-            return intersects(bounds.getMinZ(), bounds.getMaxZ(), ladder.G(),
-                    ladder.G() + LADDER_THICKNESS)
-                    && intersects(bounds.getMinX(), bounds.getMaxX(), ladder.D(), ladder.D() + 1.0);
-        }
-        return directionZ < 0
+        AxisAlignedBB ladderBounds = getLadderBounds(world, plan.getLadderBlock(),
+                plan.getLadderFacing());
+        return intersects(bounds.getMinX(), bounds.getMaxX(),
+                ladderBounds.getMinX(), ladderBounds.getMaxX())
+                && intersects(bounds.getMinY(), bounds.getMaxY(),
+                ladderBounds.getMinY(), ladderBounds.getMaxY())
                 && intersects(bounds.getMinZ(), bounds.getMaxZ(),
-                ladder.G() + 1.0 - LADDER_THICKNESS, ladder.G() + 1.0)
-                && intersects(bounds.getMinX(), bounds.getMaxX(), ladder.D(), ladder.D() + 1.0);
+                ladderBounds.getMinZ(), ladderBounds.getMaxZ());
+    }
+
+    static double getLadderThickness() {
+        return ForgeVersion.MC_1_16_5.d()
+                ? MODERN_LADDER_THICKNESS : LEGACY_LADDER_THICKNESS;
+    }
+
+    private static AxisAlignedBB getLadderBounds(World world, BlockData ladder,
+                                                  EnumFacing facing) {
+        AxisAlignedBB actual = BlockUtil.F(world, ladder);
+        int directionX = facing.getDirectionVector().getX();
+        int directionZ = facing.getDirectionVector().getZ();
+        if (!actual.isNull()) {
+            double normalSize = directionX == 0
+                    ? actual.getMaxZ() - actual.getMinZ()
+                    : actual.getMaxX() - actual.getMinX();
+            if (normalSize > 0.0 && normalSize <= 0.25) {
+                return actual;
+            }
+        }
+        double thickness = getLadderThickness();
+        double minX = ladder.D();
+        double maxX = ladder.D() + 1.0;
+        double minZ = ladder.G();
+        double maxZ = ladder.G() + 1.0;
+        if (directionX > 0) {
+            maxX = minX + thickness;
+        } else if (directionX < 0) {
+            minX = maxX - thickness;
+        } else if (directionZ > 0) {
+            maxZ = minZ + thickness;
+        } else if (directionZ < 0) {
+            minZ = maxZ - thickness;
+        }
+        return AxisAlignedBB.create(minX, ladder.B(), minZ,
+                maxX, ladder.B() + 1.0, maxZ);
     }
 
     private static boolean intersects(double minimum, double maximum,
@@ -144,13 +171,17 @@ public final class AutoLadderMovementController {
         return maximum > targetMinimum && minimum < targetMaximum;
     }
 
-    private static boolean isAboveSupportTop(EntityPlayer player, BlockData support) {
-        if (player.N() < support.B() + 0.95) {
-            return false;
-        }
+    private static double supportTopRisk(EntityPlayer player, BlockData support) {
         AxisAlignedBB bounds = player.u$src$Lgg_vape_wrapper_impl_AxisAlignedBB_$kogbsu();
-        return bounds.getMaxX() > support.D() && bounds.getMinX() < support.D() + 1.0
-                && bounds.getMaxZ() > support.G() && bounds.getMinZ() < support.G() + 1.0;
+        boolean horizontalOverlap = bounds.getMaxX() > support.D()
+                && bounds.getMinX() < support.D() + 1.0
+                && bounds.getMaxZ() > support.G()
+                && bounds.getMinZ() < support.G() + 1.0;
+        if (!horizontalOverlap) {
+            return 0.0;
+        }
+        double verticalGap = Math.max(0.0, player.N() - (support.B() + 1.0));
+        return 50000.0 / Math.max(0.2, verticalGap + 0.2);
     }
 
     public static void apply(CatchInput input) {

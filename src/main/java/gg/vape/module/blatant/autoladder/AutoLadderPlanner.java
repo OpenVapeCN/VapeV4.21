@@ -34,11 +34,10 @@ import org.jetbrains.annotations.Nullable;
 public final class AutoLadderPlanner {
     private static final int MAX_SIMULATION_TICKS = 20;
     private static final double PLAYER_MARGIN = 0.06;
-    private static final double TANGENTIAL_CATCH_INSET = 0.15;
     private static final double SUPPORT_CLEARANCE_MARGIN = 0.04;
     private static final double NO_MOVEMENT_MAX_ERROR = 0.22;
     private static final double CONTROLLED_PATH_MAX_CORRECTION = 0.45;
-    private static final int POST_CATCH_CLEARANCE_TICKS = 1;
+    private static final double CONTROL_CORRECTION_PER_TICK = 0.12;
     private static final EnumFacing[] HORIZONTAL_FACINGS =
             EnumFacing.c$src$ALgg_vape_wrapper_impl_EnumFacing_$1i3g4ft();
     private static final EnumFacing[] ALL_FACINGS = EnumFacing.t();
@@ -65,6 +64,8 @@ public final class AutoLadderPlanner {
     private int fallbackLandingRejectedCount;
     private int fallbackCollisionRejectedCount;
     private int fallbackLadderOpportunityCount;
+    private int fallbackMovementRejectedCount;
+    private int fallbackControlledCollisionRejectedCount;
     private String auditSummary = "not-run";
 
     public AutoLadderPlanner(World world, EntityPlayerSP player, boolean ladderAvailable,
@@ -127,8 +128,10 @@ public final class AutoLadderPlanner {
                 + ",anchors=" + this.fallbackAnchorCount
                 + ",blockWindows=" + this.fallbackBlockOpportunityCount
                 + ",landingRejected=" + this.fallbackLandingRejectedCount
-                + ",collisionRejected=" + this.fallbackCollisionRejectedCount
+                + ",preControlCollisionRejected=" + this.fallbackCollisionRejectedCount
                 + ",ladderWindows=" + this.fallbackLadderOpportunityCount
+                + ",movementRejected=" + this.fallbackMovementRejectedCount
+                + ",controlledCollisionRejected=" + this.fallbackControlledCollisionRejectedCount
                 + ",plans=" + supportPlans + '}'
                 + " selected=" + (selected == null ? "none" : selected.describe());
     }
@@ -206,6 +209,9 @@ public final class AutoLadderPlanner {
                     }
                     ++this.directOpportunityCount;
                     int slack = point.tick - opportunity.tick;
+                    if (!this.canCorrectToCatch(movementError, slack)) {
+                        return;
+                    }
                     double score = movementError * 1000.0 + opportunity.rotationDistance * 2.0
                             + point.tick * 4.0 - slack * 35.0;
                     AutoLadderPlan plan = new AutoLadderPlan(
@@ -256,11 +262,6 @@ public final class AutoLadderPlanner {
                             continue;
                         }
                         ++this.fallbackBlockOpportunityCount;
-                        if (this.intersectsBlockAfterPlacement(
-                                trajectory, supportBlock, blockOpportunity.tick, point.tick)) {
-                            ++this.fallbackCollisionRejectedCount;
-                            continue;
-                        }
                         PlacementOpportunity ladderOpportunity = this.findFutureFaceOpportunity(
                                 ladderTarget, trajectory,
                                 blockOpportunity.tick + 1, point.tick);
@@ -269,6 +270,22 @@ public final class AutoLadderPlanner {
                         }
                         ++this.fallbackLadderOpportunityCount;
                         int slack = point.tick - ladderOpportunity.tick;
+                        if (this.intersectsBlockBeforeCatchControl(
+                                trajectory, supportBlock, blockOpportunity.tick,
+                                ladderOpportunity.tick)) {
+                            ++this.fallbackCollisionRejectedCount;
+                            continue;
+                        }
+                        if (!this.canCorrectToCatch(movementError, slack)) {
+                            ++this.fallbackMovementRejectedCount;
+                            continue;
+                        }
+                        if (!this.avoidsSupportDuringCatchControl(
+                                trajectory, point, supportBlock, ladderOpportunity.tick,
+                                catchX, catchZ)) {
+                            ++this.fallbackControlledCollisionRejectedCount;
+                            continue;
+                        }
                         double score = movementError * 1000.0
                                 + (blockOpportunity.rotationDistance + ladderOpportunity.rotationDistance) * 2.0
                                 + point.tick * 5.0 - slack * 30.0;
@@ -282,6 +299,47 @@ public final class AutoLadderPlanner {
             }
         }
         return new ArrayList<>(plans.values());
+    }
+
+    private boolean canCorrectToCatch(double movementError, int controlTicks) {
+        if (!this.controlMovement) {
+            return movementError <= NO_MOVEMENT_MAX_ERROR;
+        }
+        double correctableDistance = NO_MOVEMENT_MAX_ERROR
+                + Math.max(0, controlTicks) * CONTROL_CORRECTION_PER_TICK;
+        return movementError <= Math.min(CONTROLLED_PATH_MAX_CORRECTION, correctableDistance);
+    }
+
+    private boolean avoidsSupportDuringCatchControl(List<TrajectoryPoint> trajectory,
+                                                     TrajectoryPoint catchPoint,
+                                                     BlockData supportBlock,
+                                                     int controlStartTick,
+                                                     double catchX, double catchZ) {
+        int controlTicks = catchPoint.tick - controlStartTick;
+        double correctionX = catchX - catchPoint.x;
+        double correctionZ = catchZ - catchPoint.z;
+        TrajectoryPoint previous = null;
+        for (TrajectoryPoint naturalPoint : trajectory) {
+            if (naturalPoint.tick < controlStartTick) {
+                continue;
+            }
+            if (naturalPoint.tick > catchPoint.tick) {
+                break;
+            }
+            double progress = controlTicks <= 0 ? 1.0
+                    : (double)(naturalPoint.tick - controlStartTick) / controlTicks;
+            progress = Math.max(0.0, Math.min(1.0, progress));
+            progress *= progress;
+            TrajectoryPoint controlledPoint = naturalPoint.offsetHorizontal(
+                    correctionX * progress, correctionZ * progress);
+            if (controlledPoint.intersectsUnitBlock(supportBlock, SUPPORT_CLEARANCE_MARGIN)
+                    || previous != null && previous.sweptIntersectsUnitBlock(
+                    controlledPoint, supportBlock, SUPPORT_CLEARANCE_MARGIN)) {
+                return false;
+            }
+            previous = controlledPoint;
+        }
+        return previous != null;
     }
 
     private void enumerateCatchCells(TrajectoryPoint point, CatchCellConsumer consumer) {
@@ -314,22 +372,23 @@ public final class AutoLadderPlanner {
 
     private double[] computeCatchPoint(BlockData ladderBlock, EnumFacing facing, TrajectoryPoint point) {
         double halfWidth = Math.max(0.2, Math.min(0.45, point.width / 2.0));
-        double playerInset = halfWidth + PLAYER_MARGIN;
-        double catchX = clamp(point.x, ladderBlock.D() + TANGENTIAL_CATCH_INSET,
-                ladderBlock.D() + 1.0 - TANGENTIAL_CATCH_INSET);
-        double catchZ = clamp(point.z, ladderBlock.G() + TANGENTIAL_CATCH_INSET,
-                ladderBlock.G() + 1.0 - TANGENTIAL_CATCH_INSET);
+        double tangentialInset = Math.min(0.49, halfWidth + PLAYER_MARGIN);
+        double normalInset = halfWidth + AutoLadderMovementController.getLadderThickness() / 2.0;
+        double catchX = clamp(point.x, ladderBlock.D() + tangentialInset,
+                ladderBlock.D() + 1.0 - tangentialInset);
+        double catchZ = clamp(point.z, ladderBlock.G() + tangentialInset,
+                ladderBlock.G() + 1.0 - tangentialInset);
         int directionX = facing.getDirectionVector().getX();
         int directionZ = facing.getDirectionVector().getZ();
         if (directionX > 0) {
-            catchX = ladderBlock.D() + playerInset;
+            catchX = ladderBlock.D() + normalInset;
         } else if (directionX < 0) {
-            catchX = ladderBlock.D() + 1.0 - playerInset;
+            catchX = ladderBlock.D() + 1.0 - normalInset;
         }
         if (directionZ > 0) {
-            catchZ = ladderBlock.G() + playerInset;
+            catchZ = ladderBlock.G() + normalInset;
         } else if (directionZ < 0) {
-            catchZ = ladderBlock.G() + 1.0 - playerInset;
+            catchZ = ladderBlock.G() + 1.0 - normalInset;
         }
         return new double[]{catchX, catchZ};
     }
@@ -428,16 +487,14 @@ public final class AutoLadderPlanner {
         return Vec3.create(x, y, z);
     }
 
-    private boolean intersectsBlockAfterPlacement(List<TrajectoryPoint> trajectory,
-                                                   BlockData block, int firstTick, int lastTick) {
-        int safetyLastTick = Math.min(lastTick + POST_CATCH_CLEARANCE_TICKS,
-                trajectory.get(trajectory.size() - 1).tick);
+    private boolean intersectsBlockBeforeCatchControl(List<TrajectoryPoint> trajectory,
+                                                       BlockData block, int firstTick, int lastTick) {
         TrajectoryPoint previous = null;
         for (TrajectoryPoint point : trajectory) {
             if (point.tick < firstTick - 1) {
                 continue;
             }
-            if (point.tick > safetyLastTick) {
+            if (point.tick > lastTick) {
                 break;
             }
             if (point.tick >= firstTick
@@ -572,17 +629,59 @@ public final class AutoLadderPlanner {
 
         private boolean sweptIntersectsUnitBlock(TrajectoryPoint next,
                                                  BlockData block, double horizontalMargin) {
-            double sweptMinX = Math.min(this.minX, next.minX);
-            double sweptMaxX = Math.max(this.maxX, next.maxX);
-            double sweptMinY = Math.min(this.minY, next.minY);
-            double sweptMaxY = Math.max(this.maxY, next.maxY);
-            double sweptMinZ = Math.min(this.minZ, next.minZ);
-            double sweptMaxZ = Math.max(this.maxZ, next.maxZ);
-            return sweptMaxX + horizontalMargin > block.D()
-                    && sweptMinX - horizontalMargin < block.D() + 1.0
-                    && sweptMaxY > block.B() && sweptMinY < block.B() + 1.0
-                    && sweptMaxZ + horizontalMargin > block.G()
-                    && sweptMinZ - horizontalMargin < block.G() + 1.0;
+            double startX = (this.minX + this.maxX) / 2.0;
+            double startY = (this.minY + this.maxY) / 2.0;
+            double startZ = (this.minZ + this.maxZ) / 2.0;
+            double endX = (next.minX + next.maxX) / 2.0;
+            double endY = (next.minY + next.maxY) / 2.0;
+            double endZ = (next.minZ + next.maxZ) / 2.0;
+            double halfWidthX = (this.maxX - this.minX) / 2.0 + horizontalMargin;
+            double halfHeight = (this.maxY - this.minY) / 2.0;
+            double halfWidthZ = (this.maxZ - this.minZ) / 2.0 + horizontalMargin;
+            double xEntry = axisEntry(startX, endX,
+                    block.D() - halfWidthX, block.D() + 1.0 + halfWidthX);
+            double yEntry = axisEntry(startY, endY,
+                    block.B() - halfHeight, block.B() + 1.0 + halfHeight);
+            double zEntry = axisEntry(startZ, endZ,
+                    block.G() - halfWidthZ, block.G() + 1.0 + halfWidthZ);
+            double xExit = axisExit(startX, endX,
+                    block.D() - halfWidthX, block.D() + 1.0 + halfWidthX);
+            double yExit = axisExit(startY, endY,
+                    block.B() - halfHeight, block.B() + 1.0 + halfHeight);
+            double zExit = axisExit(startZ, endZ,
+                    block.G() - halfWidthZ, block.G() + 1.0 + halfWidthZ);
+            double entry = Math.max(0.0, Math.max(xEntry, Math.max(yEntry, zEntry)));
+            double exit = Math.min(1.0, Math.min(xExit, Math.min(yExit, zExit)));
+            return entry <= exit;
+        }
+
+        private static double axisEntry(double start, double end,
+                                        double minimum, double maximum) {
+            double delta = end - start;
+            if (Math.abs(delta) < 1.0E-9) {
+                return start >= minimum && start <= maximum
+                        ? Double.NEGATIVE_INFINITY : Double.POSITIVE_INFINITY;
+            }
+            return Math.min((minimum - start) / delta, (maximum - start) / delta);
+        }
+
+        private static double axisExit(double start, double end,
+                                       double minimum, double maximum) {
+            double delta = end - start;
+            if (Math.abs(delta) < 1.0E-9) {
+                return start >= minimum && start <= maximum
+                        ? Double.POSITIVE_INFINITY : Double.NEGATIVE_INFINITY;
+            }
+            return Math.max((minimum - start) / delta, (maximum - start) / delta);
+        }
+
+        private TrajectoryPoint offsetHorizontal(double xOffset, double zOffset) {
+            AxisAlignedBB shiftedBounds = AxisAlignedBB.create(
+                    this.minX + xOffset, this.minY, this.minZ + zOffset,
+                    this.maxX + xOffset, this.maxY, this.maxZ + zOffset);
+            return new TrajectoryPoint(this.tick, this.x + xOffset, this.y,
+                    this.z + zOffset, this.eyeY, this.motionY,
+                    this.yaw, this.pitch, shiftedBounds, this.onGround);
         }
     }
 }

@@ -15,6 +15,7 @@ import gg.vape.module.SubModule;
 import gg.vape.module.blatant.AutoAnchor;
 import gg.vape.module.blatant.AntiBot;
 import gg.vape.module.blatant.AutoHeal;
+import gg.vape.module.blatant.AutoLadder;
 import gg.vape.module.blatant.Backtrack;
 import gg.vape.module.blatant.Blink;
 import gg.vape.module.blatant.Clutch;
@@ -219,7 +220,7 @@ implements EventListener {
         ModRegistrationBuilder.create().setModule(new Freecam()).addVersionConstraint(ForgeVersion.MC_1_16_5.b()).addVersionConstraint(ForgeVersion.MC_1_21_11.n()).registerWith(this);
         this.registerModules(Stream.of(new InvWalk()), ModManager::addMinecraft189Constraint);
         this.registerModules(Stream.of(new Backtrack()), ModManager::addBacktrackVersionConstraints);
-        this.registerModules(Stream.of(new AutoFish(), new BedBreaker(), new Clutch(), new FakeLag()), ModManager::addMinecraft1710Constraint);
+        this.registerModules(Stream.of(new AutoFish(), new BedBreaker(), new AutoLadder(), new Clutch(), new FakeLag()), ModManager::addMinecraft1710Constraint);
         this.registerModules(Stream.of(new BedPlates()), ModManager::addBedPlatesVersionConstraints);
         this.registerModules(Stream.of(new AntiBot()));
         this.registerModules(Stream.of(new Triggerbot(), new HitSwap(), new AutoAnchor(), new WindCharge(), new CrystalAura(), new AutoTotem(), new ShieldBreaker()), ModManager::addMinecraft1214Constraint);

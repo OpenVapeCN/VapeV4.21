@@ -88,6 +88,9 @@ public class AutoLadder extends Mod {
     private static final float FIXED_SPEED = 10.0f;
     private static final double DEFAULT_RESET_ANGLE_DELAY_MIN_TICKS = 3.0;
     private static final double DEFAULT_RESET_ANGLE_DELAY_MAX_TICKS = 6.0;
+    private static final int LANDING_PREDICTION_INTERVAL_TICKS = 4;
+    private static final double LANDING_PREDICTION_DRIFT_THRESHOLD = 0.35;
+    private static final int PLAN_SEARCH_INTERVAL_TICKS = 2;
 
     private final BooleanValue onLethalFall;
     private final BooleanValue onMoreThanXBlocks;
@@ -139,6 +142,11 @@ public class AutoLadder extends Mod {
     private boolean supportPlacementRequested;
     private boolean supportConfirmed;
     private boolean fallAdjustmentPending;
+    private boolean lastActivateResult;
+    private int lastLandingPredictionTick = -100;
+    private int lastSearchTick = -100;
+    private double lastPredictionX;
+    private double lastPredictionZ;
 
     public AutoLadder() {
         super("AutoLadder", 7043655, Category.UTILITY,
@@ -244,7 +252,7 @@ public class AutoLadder extends Mod {
             this.audit("server rejected placement state=" + this.state);
             this.placementRejected = false;
             if (this.isExecutingPlan()) {
-                this.showFailNotification("Server rejected the placement.", true);
+                this.showFailNotification("Server rejected block placement!", true);
                 this.invalidatePlan(true);
             }
         }
@@ -305,7 +313,9 @@ public class AutoLadder extends Mod {
                 }
                 break;
             case SEARCHING_BLOCK:
-                this.searchForPlan(player, world);
+                if (this.stateTicks - this.lastSearchTick >= PLAN_SEARCH_INTERVAL_TICKS) {
+                    this.searchForPlan(player, world);
+                }
                 break;
             case PLACING_BLOCK:
                 this.handleBlockPlacement(player, world);
@@ -519,13 +529,15 @@ public class AutoLadder extends Mod {
             this.audit("trigger=false reason=no-trigger-mode");
             return false;
         }
-        BlockPlacementGraph graph = new BlockPlacementGraph(player);
-        this.landingBlock = BlockPlacementUtility.predictLandingBlock(false, 50, player, graph);
-        if (this.landingBlock == null) {
-            this.audit("trigger=false reason=no-predicted-landing (void is never eligible)");
+        boolean refreshed = this.refreshLandingPrediction(player);
+        BlockCoordinate landing = this.landingBlock;
+        if (landing == null) {
+            if (refreshed) {
+                this.audit("trigger=false reason=no-predicted-landing (void is never eligible)");
+            }
             return false;
         }
-        double landingTop = this.landingBlock.E() + 1.0;
+        double landingTop = landing.E() + 1.0;
         float remainingDrop = (float)Math.max(0.0, player.N() - landingTop);
         float currentFallDistance = player.getFallDistance();
         float totalFallDistance = Math.max(currentFallDistance, currentFallDistance + remainingDrop);
@@ -535,16 +547,39 @@ public class AutoLadder extends Mod {
         boolean exceedsThreshold = this.onMoreThanXBlocks.getEffectiveValue().booleanValue()
                 && totalFallDistance >= ((Double)this.blocksThreshold.getValue()).floatValue();
         boolean activate = lethal || exceedsThreshold;
-        this.audit("trigger=" + activate + " landing=" + this.landingBlock
-                + " fall=" + Math.round(totalFallDistance * 100.0f) / 100.0f
-                + " damage=" + Math.round(predictedDamage * 100.0f) / 100.0f
-                + " health=" + Math.round(this.effectiveHealth(player) * 100.0f) / 100.0f
-                + " lethal=" + lethal + " threshold=" + exceedsThreshold);
+        if (refreshed || activate != this.lastActivateResult) {
+            this.lastActivateResult = activate;
+            this.audit("trigger=" + activate + " landing=" + landing
+                    + " fall=" + Math.round(totalFallDistance * 100.0f) / 100.0f
+                    + " damage=" + Math.round(predictedDamage * 100.0f) / 100.0f
+                    + " health=" + Math.round(this.effectiveHealth(player) * 100.0f) / 100.0f
+                    + " lethal=" + lethal + " threshold=" + exceedsThreshold);
+        }
         return activate;
+    }
+
+    private boolean refreshLandingPrediction(EntityPlayerSP player) {
+        if (this.lastLandingPredictionTick >= 0
+                && this.stateTicks - this.lastLandingPredictionTick
+                < LANDING_PREDICTION_INTERVAL_TICKS) {
+            double deltaX = player.z() - this.lastPredictionX;
+            double deltaZ = player.h() - this.lastPredictionZ;
+            if (deltaX * deltaX + deltaZ * deltaZ
+                    < LANDING_PREDICTION_DRIFT_THRESHOLD * LANDING_PREDICTION_DRIFT_THRESHOLD) {
+                return false;
+            }
+        }
+        BlockPlacementGraph graph = new BlockPlacementGraph(player);
+        this.landingBlock = BlockPlacementUtility.predictLandingBlock(false, 50, player, graph);
+        this.lastLandingPredictionTick = this.stateTicks;
+        this.lastPredictionX = player.z();
+        this.lastPredictionZ = player.h();
+        return true;
     }
 
     private void searchForPlan(EntityPlayerSP player, World world) {
         this.restoreMovementInput();
+        this.lastSearchTick = this.stateTicks;
         if (!this.shouldActivate(player)) {
             this.transition(AutoLadderState.FALLING);
             return;
@@ -576,11 +611,11 @@ public class AutoLadder extends Mod {
             this.audit("search result=none landingTooClose=" + landingTooClose);
             if (landingTooClose) {
                 if (this.ladderSlot == -1) {
-                    this.showFailNotification("No ladder is available.", true);
+                    this.showFailNotification("No ladder available!", true);
                 } else if (this.supportSlot == -1) {
-                    this.showFailNotification("No support block is available.", true);
+                    this.showFailNotification("No support block available!", true);
                 } else {
-                    this.showFailNotification("Could not find a valid AutoLadder plan.", true);
+                    this.showFailNotification("Could not find a valid laddering solution!", true);
                 }
                 this.enterFail(false);
             }
@@ -1216,6 +1251,9 @@ public class AutoLadder extends Mod {
         this.placementRejected = false;
         this.trajectoryInvalidated = false;
         this.fallEpisodeResolved = false;
+        this.lastActivateResult = false;
+        this.lastLandingPredictionTick = -100;
+        this.lastSearchTick = -100;
         this.rejectedPlans.clear();
     }
 
@@ -1230,6 +1268,14 @@ public class AutoLadder extends Mod {
                 + " plan=" + (this.plan == null ? "none" : this.plan.getMode()));
         if (next == AutoLadderState.PLACING_BLOCK || next == AutoLadderState.PLACING_LADDER) {
             this.resetPlacementAttempts();
+        }
+        if (next == AutoLadderState.FALLING || next == AutoLadderState.SEARCHING_BLOCK) {
+            this.lastLandingPredictionTick = -100;
+            this.lastPredictionX = 0.0;
+            this.lastPredictionZ = 0.0;
+        }
+        if (next == AutoLadderState.SEARCHING_BLOCK) {
+            this.lastSearchTick = -100;
         }
     }
 

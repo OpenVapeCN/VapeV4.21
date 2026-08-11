@@ -244,6 +244,7 @@ public class AutoLadder extends Mod {
             this.audit("server rejected placement state=" + this.state);
             this.placementRejected = false;
             if (this.isExecutingPlan()) {
+                this.showFailNotification("Server rejected the placement.", true);
                 this.invalidatePlan(true);
             }
         }
@@ -574,7 +575,13 @@ public class AutoLadder extends Mod {
             boolean landingTooClose = this.isLandingTooClose(player);
             this.audit("search result=none landingTooClose=" + landingTooClose);
             if (landingTooClose) {
-                this.showFailNotification("Could not find an AutoLadder path!", false);
+                if (this.ladderSlot == -1) {
+                    this.showFailNotification("No ladder is available.", true);
+                } else if (this.supportSlot == -1) {
+                    this.showFailNotification("No support block is available.", true);
+                } else {
+                    this.showFailNotification("Could not find a valid AutoLadder plan.", true);
+                }
                 this.enterFail(false);
             }
             return;
@@ -624,10 +631,14 @@ public class AutoLadder extends Mod {
             return;
         }
         this.supportSlot = this.ensureSupportSlot(player, this.supportSlot);
-        if (this.supportSlot == -1 || !this.isSupportPlacementClear(player, world)) {
+        boolean placementClear = this.isSupportPlacementClear(player, world);
+        if (this.supportSlot == -1 || !placementClear) {
             this.audit("place-block unavailable slot=" + this.supportSlot
-                    + " clear=" + this.isSupportPlacementClear(player, world));
+                    + " clear=" + placementClear);
             if (this.isLandingTooClose(player)) {
+                this.showFailNotification(this.supportSlot == -1
+                        ? "No support block is available."
+                        : "Could not find a valid AutoLadder plan.", true);
                 this.enterFail(true);
             }
             return;
@@ -653,6 +664,7 @@ public class AutoLadder extends Mod {
         this.ladderSlot = this.ensureLadderSlot(player, this.ladderSlot);
         if (this.ladderSlot == -1) {
             this.audit("place-ladder unavailable: no ladder slot");
+            this.showFailNotification("No ladder is available.", true);
             this.enterFail(true);
             return;
         }

@@ -43,6 +43,7 @@ public final class AutoLadderPlanner {
     private static final double CATCH_CELL_INSET = 0.02;
     private static final double CATCH_CANDIDATE_RADIUS = 0.67;
     private static final int CENTERING_LOOKAHEAD_TICKS = 2;
+    private static final double CENTERING_UNSAFE_SCORE = 1.0E12;
     private static final double LANDING_CENTER_SCORE_WEIGHT = 600.0;
     private static final double FALL_ADJUSTMENT_SCORE = 20.0;
     private static final double PLAN_COUNT_BONUS = 25.0;
@@ -503,22 +504,23 @@ public final class AutoLadderPlanner {
         TrajectoryPoint previous = TrajectoryPoint.capture(
                 controlStartTick, simulatedPlayer,
                 simulatedPlayer.b$src$Z$fqlxe4(), new BlockPlacementGraph(simulation));
-        if (this.isSafeCatchPosition(previous, ladderBlock, supportBlock)
-                && this.verticallyOverlapsLadder(previous, ladderBlock)) {
-            return new ControlledCatch(controlStartTick,
-                    this.centerError(previous, ladderBlock));
-        }
-
         EnumFacing ladderFacing = this.facingFromSupport(ladderBlock, supportBlock);
         AxisAlignedBB ladderBounds = AutoLadderMovementController
                 .getExpectedLadderBounds(ladderBlock, ladderFacing);
+        if (this.isLadderContact(previous, ladderBlock, supportBlock, ladderBounds)) {
+            double[] target = AutoLadderMovementController.getMovementTarget(
+                    simulatedPlayer, this.world, ladderBlock, ladderFacing);
+            return new ControlledCatch(controlStartTick,
+                    Math.hypot(target[0] - previous.x, target[1] - previous.z));
+        }
+
         int lastTick = Math.min(MAX_SIMULATION_TICKS,
                 controlStartTick + MAX_SIMULATION_TICKS);
         for (int tick = controlStartTick + 1; tick <= lastTick; ++tick) {
             BlockPlacementGraph snapshot = new BlockPlacementGraph(simulation);
             CenterInput input = this.chooseCenteringInput(
-                    simulatedPlayer, snapshot, ladderBlock.D() + 0.5,
-                    ladderBlock.G() + 0.5);
+                    simulatedPlayer, snapshot, ladderBlock,
+                    supportBlock, ladderFacing, ladderBounds);
             simulation.setInput(input.forward, input.backward,
                     input.left, input.right, false, false);
             simulation.simulateTick(false);
@@ -546,10 +548,11 @@ public final class AutoLadderPlanner {
                 ++this.inertiaGroundRejectedCount;
                 return null;
             }
-            if (this.isSafeCatchPosition(current, ladderBlock, supportBlock)
-                    && this.verticallyOverlapsLadder(current, ladderBlock)) {
+            if (this.isLadderContact(current, ladderBlock, supportBlock, ladderBounds)) {
+                double[] target = AutoLadderMovementController.getMovementTarget(
+                        simulatedPlayer, this.world, ladderBlock, ladderFacing);
                 return new ControlledCatch(tick,
-                        this.centerError(current, ladderBlock));
+                        Math.hypot(target[0] - current.x, target[1] - current.z));
             }
             if (current.y < ladderBlock.B() - 0.05 || current.motionY >= 0.0) {
                 ++this.inertiaMissRejectedCount;
@@ -573,12 +576,16 @@ public final class AutoLadderPlanner {
 
     private CenterInput chooseCenteringInput(EntityPlayer sourcePlayer,
                                              BlockPlacementGraph snapshot,
-                                             double centerX, double centerZ) {
+                                             BlockData ladderBlock,
+                                             BlockData supportBlock,
+                                             EnumFacing ladderFacing,
+                                             AxisAlignedBB ladderBounds) {
         CenterInput bestInput = CENTER_INPUTS[0];
         double bestScore = Double.POSITIVE_INFINITY;
         for (CenterInput input : CENTER_INPUTS) {
             double score = this.simulateCenteringInput(
-                    sourcePlayer, snapshot, input, centerX, centerZ);
+                    sourcePlayer, snapshot, input, ladderBlock,
+                    supportBlock, ladderFacing, ladderBounds);
             if (score < bestScore) {
                 bestScore = score;
                 bestInput = input;
@@ -590,23 +597,58 @@ public final class AutoLadderPlanner {
     private double simulateCenteringInput(EntityPlayer sourcePlayer,
                                           BlockPlacementGraph snapshot,
                                           CenterInput input,
-                                          double centerX, double centerZ) {
+                                          BlockData ladderBlock,
+                                          BlockData supportBlock,
+                                          EnumFacing ladderFacing,
+                                          AxisAlignedBB ladderBounds) {
         BlockPathPlanner lookahead = new BlockPathPlanner(
                 sourcePlayer, this.player, this.world, snapshot);
         lookahead.applySnapshot(snapshot);
         lookahead.setInput(input.forward, input.backward,
                 input.left, input.right, false, false);
         EntityPlayer simulatedPlayer = lookahead.getSimulatedPlayer();
+        TrajectoryPoint previous = TrajectoryPoint.capture(
+                0, simulatedPlayer, simulatedPlayer.b$src$Z$fqlxe4(), snapshot);
         double bestDistanceSq = Double.POSITIVE_INFINITY;
         for (int tick = 1; tick <= CENTERING_LOOKAHEAD_TICKS; ++tick) {
             lookahead.simulateTick(false);
-            double deltaX = centerX - simulatedPlayer.z();
-            double deltaZ = centerZ - simulatedPlayer.h();
+            TrajectoryPoint current = TrajectoryPoint.capture(
+                    tick, simulatedPlayer, simulatedPlayer.b$src$Z$fqlxe4(),
+                    new BlockPlacementGraph(lookahead));
+            boolean contact = this.isLadderContact(
+                    current, ladderBlock, supportBlock, ladderBounds);
+            if (current.intersectsUnitBlock(supportBlock, SUPPORT_CLEARANCE_MARGIN)
+                    || previous.sweptIntersectsUnitBlock(
+                    current, supportBlock, SUPPORT_CLEARANCE_MARGIN)) {
+                return CENTERING_UNSAFE_SCORE + tick * 1000.0;
+            }
+            double ladderTop = ladderBlock.B() + 1.0;
+            if (previous.y >= ladderTop && current.y < ladderTop) {
+                TrajectoryPoint topCrossing = TrajectoryPoint.interpolateAtY(
+                        previous, current, ladderTop);
+                if (topCrossing.horizontallyIntersects(
+                        ladderBounds, LADDER_TOP_CLEARANCE_MARGIN)) {
+                    return CENTERING_UNSAFE_SCORE + tick * 2000.0;
+                }
+            }
+            if (current.onGround && !contact) {
+                return CENTERING_UNSAFE_SCORE + tick * 3000.0;
+            }
+            double[] target = AutoLadderMovementController.getMovementTarget(
+                    simulatedPlayer, this.world, ladderBlock, ladderFacing);
+            double deltaX = target[0] - simulatedPlayer.z();
+            double deltaZ = target[1] - simulatedPlayer.h();
             bestDistanceSq = Math.min(bestDistanceSq,
                     deltaX * deltaX + deltaZ * deltaZ);
+            if (contact) {
+                return -1000000.0 + tick * 10000.0 + bestDistanceSq * 1000.0;
+            }
+            previous = current;
         }
-        double deltaX = centerX - simulatedPlayer.z();
-        double deltaZ = centerZ - simulatedPlayer.h();
+        double[] target = AutoLadderMovementController.getMovementTarget(
+                simulatedPlayer, this.world, ladderBlock, ladderFacing);
+        double deltaX = target[0] - simulatedPlayer.z();
+        double deltaZ = target[1] - simulatedPlayer.h();
         double finalDistanceSq = deltaX * deltaX + deltaZ * deltaZ;
         double horizontalSpeedSq = simulatedPlayer.t() * simulatedPlayer.t()
                 + simulatedPlayer.T() * simulatedPlayer.T();
@@ -622,9 +664,13 @@ public final class AutoLadderPlanner {
         return point.maxY > ladderBlock.B() && point.minY < ladderBlock.B() + 1.0;
     }
 
-    private double centerError(TrajectoryPoint point, BlockData ladderBlock) {
-        return Math.hypot(point.x - (ladderBlock.D() + 0.5),
-                point.z - (ladderBlock.G() + 0.5));
+    private boolean isLadderContact(TrajectoryPoint point,
+                                    BlockData ladderBlock,
+                                    BlockData supportBlock,
+                                    AxisAlignedBB ladderBounds) {
+        return this.isSafeCatchPosition(point, ladderBlock, supportBlock)
+                && this.verticallyOverlapsLadder(point, ladderBlock)
+                && point.horizontallyIntersects(ladderBounds, 0.0);
     }
 
     private boolean isSafeCatchPosition(TrajectoryPoint point,

@@ -430,8 +430,7 @@ public class AutoLadder extends Mod {
         }
         AutoLadderMovementController.CenterInput input =
                 AutoLadderMovementController.chooseCentering(
-                        player, player.getWorld(),
-                        this.plan.getCatchX(), this.plan.getCatchZ());
+                        player, player.getWorld(), this.plan);
         this.audit("center input " + input.describe()
                 + " onLadder=" + player.boolean_S()
                 + " insideLadderBounds=" + AutoLadderMovementController.isInsideLadderBounds(

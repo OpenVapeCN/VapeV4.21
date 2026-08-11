@@ -134,6 +134,7 @@ public class AutoLadder extends Mod {
     private boolean placementRejected;
     private boolean trajectoryInvalidated;
     private boolean movementControlled;
+    private boolean movementAvailable;
     private boolean buttonsLocked;
     private boolean rightClickBlocked;
     private boolean placementKeyHeld;
@@ -439,7 +440,8 @@ public class AutoLadder extends Mod {
         AutoLadderMovementController.CenterInput input =
                 AutoLadderMovementController.chooseCentering(
                         player, player.getWorld(),
-                        this.plan.getCatchX(), this.plan.getCatchZ());
+                        this.plan.getCatchX(), this.plan.getCatchZ(),
+                        this.plan.getLadderBlock(), this.plan.getLadderFacing());
         AutoLadderMovementController.apply(input);
         this.movementControlled = true;
     }
@@ -611,6 +613,7 @@ public class AutoLadder extends Mod {
         this.ladderSlot = this.findLadderSlot(player);
         this.supportSlot = this.findSupportSlot(player);
         boolean movementAvailable = !SharedModuleControlClaims.movementInput.isLocked();
+        this.movementAvailable = movementAvailable;
         AutoLadderPlanner planner = new AutoLadderPlanner(world, player,
                 this.ladderSlot != -1, this.supportSlot != -1,
                 true,
@@ -774,7 +777,10 @@ public class AutoLadder extends Mod {
     }
 
     private boolean shouldControlMovement() {
-        return this.state == AutoLadderState.CENTERING;
+        return this.plan != null && this.movementAvailable
+                && (this.state == AutoLadderState.PLACING_BLOCK
+                || this.state == AutoLadderState.PLACING_LADDER
+                || this.state == AutoLadderState.CENTERING);
     }
 
     private void queueFallAdjustment(AutoLadderFallAdjustment adjustment) {
@@ -1213,6 +1219,7 @@ public class AutoLadder extends Mod {
         this.landingBlock = null;
         this.placementRejected = false;
         this.trajectoryInvalidated = false;
+        this.movementAvailable = false;
         this.fallEpisodeResolved = false;
         this.lastActivateResult = false;
         this.lastLandingPredictionTick = -100;
@@ -1379,6 +1386,7 @@ public class AutoLadder extends Mod {
     }
 
     private RayTraceResult getPlacementRayTrace() {
-        return RotationManager.INSTANCE.getNormalReachRayTrace();
+        return RotationManager.INSTANCE.rayTraceUsingManagedRotation(
+                Minecraft.playerController().N() + 0.1, 0.0f, false);
     }
 }

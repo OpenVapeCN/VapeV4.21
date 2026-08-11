@@ -17,6 +17,7 @@ import gg.vape.wrapper.impl.World;
 public final class AutoLadderMovementController {
     private static final double LEGACY_LADDER_THICKNESS = 0.125;
     private static final double MODERN_LADDER_THICKNESS = 0.1875;
+    private static final double CONTACT_PRESS_OVERLAP = 0.005;
     private static final int CENTERING_LOOKAHEAD_TICKS = 2;
     private static final CenterInput[] INPUTS = new CenterInput[]{
             new CenterInput(false, false, false, false),
@@ -39,9 +40,26 @@ public final class AutoLadderMovementController {
                 new BlockPlacementGraph(player), centerX, centerZ);
     }
 
+    public static CenterInput chooseCentering(EntityPlayerSP player, World world,
+                                              double centerX, double centerZ,
+                                              BlockData ladderBlock, EnumFacing facing) {
+        return chooseCentering(player, player, world,
+                new BlockPlacementGraph(player), centerX, centerZ, ladderBlock, facing);
+    }
+
     public static CenterInput chooseCentering(EntityPlayer sourcePlayer, EntityPlayerSP localPlayer,
                                               World world, BlockPlacementGraph graph,
                                               double centerX, double centerZ) {
+        return chooseCentering(sourcePlayer, localPlayer, world, graph,
+                centerX, centerZ, null, null);
+    }
+
+    public static CenterInput chooseCentering(EntityPlayer sourcePlayer, EntityPlayerSP localPlayer,
+                                              World world, BlockPlacementGraph graph,
+                                              double centerX, double centerZ,
+                                              BlockData ladderBlock, EnumFacing facing) {
+        double[] target = resolveCenteringTarget(sourcePlayer, centerX, centerZ,
+                ladderBlock, facing);
         boolean reusableSimulation = ForgeVersion.MC_1_21_4.d() || ForgeVersion.MC_1_16_5.d();
         BlockPathPlanner simulation = reusableSimulation
                 ? new BlockPathPlanner(sourcePlayer, localPlayer, world, graph) : null;
@@ -49,15 +67,63 @@ public final class AutoLadderMovementController {
         double bestScore = Double.POSITIVE_INFINITY;
         for (CenterInput input : INPUTS) {
             double score = reusableSimulation
-                    ? simulateCenteringInput(simulation, graph, input, centerX, centerZ)
+                    ? simulateCenteringInput(simulation, graph, input, target[0], target[1])
                     : simulateCenteringInput(sourcePlayer, localPlayer, world, graph,
-                            input, centerX, centerZ);
+                            input, target[0], target[1]);
             if (score < bestScore) {
                 bestScore = score;
                 bestInput = input;
             }
         }
         return bestInput;
+    }
+
+    /**
+     * On versions where {@code isOnLadder} additionally requires a horizontal contact
+     * (1.8.9/1.12.2), steering to the ladder cell center never touches the ladder box,
+     * so the grab can never trigger. Aim the player's hitbox slightly INTO the ladder
+     * face instead, so the collision keeps the contact pressed every tick.
+     */
+    private static double[] resolveCenteringTarget(EntityPlayer player, double centerX, double centerZ,
+                                                   BlockData ladderBlock, EnumFacing facing) {
+        if (!requiresLadderContact() || ladderBlock == null || facing == null) {
+            return new double[]{centerX, centerZ};
+        }
+        AxisAlignedBB bounds = player.u$src$Lgg_vape_wrapper_impl_AxisAlignedBB_$kogbsu();
+        double halfWidth = (bounds.getMaxX() - bounds.getMinX()) / 2.0;
+        double halfDepth = (bounds.getMaxZ() - bounds.getMinZ()) / 2.0;
+        double thickness = getLadderThickness();
+        double targetX = centerX;
+        double targetZ = centerZ;
+        int directionX = facing.getDirectionVector().getX();
+        int directionZ = facing.getDirectionVector().getZ();
+        if (directionX > 0) {
+            targetX = ladderBlock.D() + halfWidth + thickness - CONTACT_PRESS_OVERLAP;
+        } else if (directionX < 0) {
+            targetX = ladderBlock.D() + 1.0 - halfWidth - thickness + CONTACT_PRESS_OVERLAP;
+        } else if (directionZ > 0) {
+            targetZ = ladderBlock.G() + halfDepth + thickness - CONTACT_PRESS_OVERLAP;
+        } else if (directionZ < 0) {
+            targetZ = ladderBlock.G() + 1.0 - halfDepth - thickness + CONTACT_PRESS_OVERLAP;
+        }
+        return new double[]{targetX, targetZ};
+    }
+
+    static boolean requiresLadderContact() {
+        return ForgeVersion.MC_1_8_9.d() || ForgeVersion.MC_1_12_2.d();
+    }
+
+    /**
+     * Clearance margin used when checking the player against the support block. Contact
+     * versions must be allowed to rest flush against the wall (the margin becomes slightly
+     * negative to tolerate floating point while still rejecting real penetration).
+     */
+    static double getSupportClearanceMargin() {
+        return requiresLadderContact() ? -CONTACT_PRESS_OVERLAP : 0.04;
+    }
+
+    static double getLadderTopClearanceMargin() {
+        return requiresLadderContact() ? -CONTACT_PRESS_OVERLAP : 0.002;
     }
 
     private static double simulateCenteringInput(BlockPathPlanner simulation,

@@ -37,9 +37,7 @@ import org.jetbrains.annotations.Nullable;
  */
 public final class AutoLadderPlanner {
     private static final int MAX_SIMULATION_TICKS = 20;
-    private static final double SUPPORT_CLEARANCE_MARGIN = 0.04;
     private static final double LADDER_SIDE_ENTRY_DEPTH = 0.28;
-    private static final double LADDER_TOP_CLEARANCE_MARGIN = 0.002;
     private static final double CATCH_CELL_INSET = 0.02;
     private static final double CATCH_CANDIDATE_RADIUS = 0.67;
     private static final double LANDING_CENTER_SCORE_WEIGHT = 600.0;
@@ -430,7 +428,8 @@ public final class AutoLadderPlanner {
             AutoLadderMovementController.CenterInput input =
                     AutoLadderMovementController.chooseCentering(
                             simulatedPlayer, this.player, this.world, snapshot,
-                            ladderBlock.D() + 0.5, ladderBlock.G() + 0.5);
+                            ladderBlock.D() + 0.5, ladderBlock.G() + 0.5,
+                            ladderBlock, ladderFacing);
             simulation.setInput(input.isForward(), input.isBackward(),
                     input.isLeft(), input.isRight(), false, false);
             simulation.simulateTick(false);
@@ -438,9 +437,9 @@ public final class AutoLadderPlanner {
                     tick, simulatedPlayer, simulatedPlayer.b$src$Z$fqlxe4(),
                     new BlockPlacementGraph(simulation));
 
-            if (current.intersectsUnitBlock(supportBlock, SUPPORT_CLEARANCE_MARGIN)
+            if (current.intersectsUnitBlock(supportBlock, this.supportClearanceMargin())
                     || previous.sweptIntersectsUnitBlock(
-                    current, supportBlock, SUPPORT_CLEARANCE_MARGIN)) {
+                    current, supportBlock, this.supportClearanceMargin())) {
                 return null;
             }
             double ladderTop = ladderBlock.B() + 1.0;
@@ -448,7 +447,7 @@ public final class AutoLadderPlanner {
                 TrajectoryPoint topCrossing = TrajectoryPoint.interpolateAtY(
                         previous, current, ladderTop);
                 if (topCrossing.horizontallyIntersects(
-                        ladderBounds, LADDER_TOP_CLEARANCE_MARGIN)) {
+                        ladderBounds, this.ladderTopClearanceMargin())) {
                     return null;
                 }
             }
@@ -497,7 +496,15 @@ public final class AutoLadderPlanner {
                 && point.z <= ladderBlock.G() + 1.0 - CATCH_CELL_INSET;
         return centerInsideLadderCell
                 && !point.horizontallyIntersectsUnitBlock(
-                supportBlock, SUPPORT_CLEARANCE_MARGIN);
+                supportBlock, this.supportClearanceMargin());
+    }
+
+    private double supportClearanceMargin() {
+        return AutoLadderMovementController.getSupportClearanceMargin();
+    }
+
+    private double ladderTopClearanceMargin() {
+        return AutoLadderMovementController.getLadderTopClearanceMargin();
     }
 
     private EnumFacing facingFromSupport(BlockData ladderBlock, BlockData supportBlock) {
@@ -769,9 +776,9 @@ public final class AutoLadderPlanner {
                 break;
             }
             if (point.tick >= firstTick
-                    && (point.intersectsUnitBlock(block, SUPPORT_CLEARANCE_MARGIN)
+                    && (point.intersectsUnitBlock(block, this.supportClearanceMargin())
                     || previous != null && previous.sweptIntersectsUnitBlock(
-                    point, block, SUPPORT_CLEARANCE_MARGIN))) {
+                    point, block, this.supportClearanceMargin()))) {
                 return true;
             }
             previous = point;
@@ -784,7 +791,7 @@ public final class AutoLadderPlanner {
         TrajectoryPoint landingPoint = candidate.points.get(candidate.points.size() - 1);
         return supportBlock.B() == MathUtil.floor(landingPoint.y + 1.0E-4)
                 && landingPoint.horizontallyIntersectsUnitBlock(
-                supportBlock, SUPPORT_CLEARANCE_MARGIN);
+                supportBlock, this.supportClearanceMargin());
     }
 
     private boolean isFutureFaceUnobstructed(Vec3 eye, Vec3 faceCenter) {

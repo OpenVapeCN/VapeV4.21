@@ -635,20 +635,17 @@ public final class AutoLadderPlanner {
                         baseX + xOffset, ladderY, baseZ + zOffset);
                 ++this.catchGeometryCount;
                 for (EnumFacing facing : HORIZONTAL_FACINGS) {
-                    double[] catchPoint = this.computeCatchPoint(ladderBlock);
-                    double movementError = Math.hypot(catchPoint[0] - point.x, catchPoint[1] - point.z);
+                    double catchX = ladderBlock.D() + 0.5;
+                    double catchZ = ladderBlock.G() + 0.5;
+                    double movementError = Math.hypot(catchX - point.x, catchZ - point.z);
                     if (movementError > CATCH_CANDIDATE_RADIUS) {
                         continue;
                     }
                     ++this.catchGeometryCount;
-                    consumer.accept(ladderBlock, facing, catchPoint[0], catchPoint[1], movementError);
+                    consumer.accept(ladderBlock, facing, catchX, catchZ, movementError);
                 }
             }
         }
-    }
-
-    private double[] computeCatchPoint(BlockData ladderBlock) {
-        return new double[]{ladderBlock.D() + 0.5, ladderBlock.G() + 0.5};
     }
 
     @Nullable
@@ -1126,15 +1123,6 @@ public final class AutoLadderPlanner {
                         ? Double.POSITIVE_INFINITY : Double.NEGATIVE_INFINITY;
             }
             return Math.max((minimum - start) / delta, (maximum - start) / delta);
-        }
-
-        private TrajectoryPoint offsetHorizontal(double xOffset, double zOffset) {
-            AxisAlignedBB shiftedBounds = AxisAlignedBB.create(
-                    this.minX + xOffset, this.minY, this.minZ + zOffset,
-                    this.maxX + xOffset, this.maxY, this.maxZ + zOffset);
-            return new TrajectoryPoint(this.tick, this.x + xOffset, this.y,
-                    this.z + zOffset, this.eyeY, this.motionY,
-                    this.yaw, this.pitch, shiftedBounds, this.onGround, this.snapshot);
         }
     }
 }

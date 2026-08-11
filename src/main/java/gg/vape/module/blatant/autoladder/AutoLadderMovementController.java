@@ -3,7 +3,6 @@ package gg.vape.module.blatant.autoladder;
 import gg.vape.module.blatant.blockin.BlockPathPlanner;
 import gg.vape.module.blatant.blockin.BlockPlacementGraph;
 import gg.vape.movement.MovementInputHelper;
-import gg.vape.utils.BlockUtil;
 import gg.vape.utils.datas.BlockData;
 import gg.vape.wrapper.impl.AxisAlignedBB;
 import gg.vape.wrapper.impl.EntityPlayer;
@@ -76,37 +75,9 @@ public final class AutoLadderMovementController {
                 + horizontalSpeedSq * 150.0 + overshootPenalty;
     }
 
-    public static boolean isInsideLadderBounds(EntityPlayer player, World world,
-                                               AutoLadderPlan plan) {
-        AxisAlignedBB bounds = player.u$src$Lgg_vape_wrapper_impl_AxisAlignedBB_$kogbsu();
-        AxisAlignedBB ladderBounds = getLadderBounds(world, plan.getLadderBlock(),
-                plan.getLadderFacing());
-        return intersects(bounds.getMinX(), bounds.getMaxX(),
-                ladderBounds.getMinX(), ladderBounds.getMaxX())
-                && intersects(bounds.getMinY(), bounds.getMaxY(),
-                ladderBounds.getMinY(), ladderBounds.getMaxY())
-                && intersects(bounds.getMinZ(), bounds.getMaxZ(),
-                ladderBounds.getMinZ(), ladderBounds.getMaxZ());
-    }
-
     static double getLadderThickness() {
         return ForgeVersion.MC_1_16_5.d()
                 ? MODERN_LADDER_THICKNESS : LEGACY_LADDER_THICKNESS;
-    }
-
-    private static AxisAlignedBB getLadderBounds(World world, BlockData ladder,
-                                                  EnumFacing facing) {
-        AxisAlignedBB actual = BlockUtil.F(world, ladder);
-        int directionX = facing.getDirectionVector().getX();
-        if (!actual.isNull()) {
-            double normalSize = directionX == 0
-                    ? actual.getMaxZ() - actual.getMinZ()
-                    : actual.getMaxX() - actual.getMinX();
-            if (normalSize > 0.0 && normalSize <= 0.25) {
-                return actual;
-            }
-        }
-        return getExpectedLadderBounds(ladder, facing);
     }
 
     static AxisAlignedBB getExpectedLadderBounds(BlockData ladder, EnumFacing facing) {
@@ -128,11 +99,6 @@ public final class AutoLadderMovementController {
         }
         return AxisAlignedBB.create(minX, ladder.B(), minZ,
                 maxX, ladder.B() + 1.0, maxZ);
-    }
-
-    private static boolean intersects(double minimum, double maximum,
-                                      double targetMinimum, double targetMaximum) {
-        return maximum > targetMinimum && minimum < targetMaximum;
     }
 
     public static void apply(CenterInput input) {
@@ -169,11 +135,6 @@ public final class AutoLadderMovementController {
             this.backward = backward;
             this.left = left;
             this.right = right;
-        }
-
-        public String describe() {
-            return "F=" + this.forward + ",B=" + this.backward
-                    + ",L=" + this.left + ",R=" + this.right;
         }
 
     }

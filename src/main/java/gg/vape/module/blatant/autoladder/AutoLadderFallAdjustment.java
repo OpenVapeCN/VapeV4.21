@@ -42,10 +42,4 @@ public enum AutoLadderFallAdjustment {
     public boolean isRight() {
         return this.right;
     }
-
-    public String describe() {
-        return this == PHYSICAL ? "PHYSICAL"
-                : "F=" + this.forward + ",B=" + this.backward
-                + ",L=" + this.left + ",R=" + this.right;
-    }
 }

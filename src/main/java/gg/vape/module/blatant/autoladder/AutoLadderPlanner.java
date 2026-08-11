@@ -71,9 +71,6 @@ public final class AutoLadderPlanner {
     private final BlockCoordinate landingBlock;
     private final double reach;
     private final boolean[] physicalInput;
-    private int trajectoryPointCount;
-    private int gridCellCount;
-    private int catchCellCount;
     private int catchGeometryCount;
     private int existingLadderCount;
     private int directSupportCount;
@@ -82,26 +79,14 @@ public final class AutoLadderPlanner {
     private int fallbackSpaceCount;
     private int fallbackAnchorCount;
     private int fallbackBlockOpportunityCount;
-    private int fallbackLandingRejectedCount;
     private int fallbackCollisionRejectedCount;
     private int fallbackLadderOpportunityCount;
     private int fallbackTimingRejectedCount;
     private int fallbackMovementRejectedCount;
     private int fallbackControlledCollisionRejectedCount;
     private int fallbackLadderTopRejectedCount;
-    private int inertiaSimulationCount;
-    private int inertiaGroundRejectedCount;
-    private int inertiaSupportRejectedCount;
-    private int inertiaLadderTopRejectedCount;
-    private int inertiaMissRejectedCount;
-    private int sweptCatchSampleCount;
-    private int evaluatedTrajectoryCount;
-    private int minimumCatchLayer = Integer.MAX_VALUE;
-    private int maximumCatchLayer = Integer.MIN_VALUE;
     private AutoLadderFallAdjustment recommendedFallAdjustment =
             AutoLadderFallAdjustment.PHYSICAL;
-    private double recommendedCenterError = Double.POSITIVE_INFINITY;
-    private String auditSummary = "not-run";
 
     public AutoLadderPlanner(World world, EntityPlayerSP player, boolean ladderAvailable,
                              boolean supportBlockAvailable, boolean allowSupportBlock,
@@ -131,95 +116,42 @@ public final class AutoLadderPlanner {
     public AutoLadderPlan findBestPlan() {
         List<TrajectoryCandidate> trajectories = this.simulateTrajectories();
         if (trajectories.isEmpty()) {
-            this.finishAudit(null, 0, 0);
             return null;
         }
 
         List<CandidateEvaluation> evaluations = new ArrayList<>();
-        int directPlanCount = 0;
         for (TrajectoryCandidate trajectory : trajectories) {
             CounterSnapshot before = new CounterSnapshot(this);
             List<AutoLadderPlan> directPlans = this.findDirectPlans(trajectory);
             CandidateEvaluation evaluation = new CandidateEvaluation(
                     trajectory, directPlans, before.progressSince(this));
             evaluations.add(evaluation);
-            directPlanCount += directPlans.size();
         }
         CandidateEvaluation direct = this.selectPlanEvaluation(evaluations, true);
         if (direct != null) {
             AutoLadderPlan selected = direct.bestDirectPlan();
             this.recordRecommendation(direct, selected);
-            this.finishAudit(selected, directPlanCount, 0);
             return selected;
         }
         if (!this.allowSupportBlock || !this.supportBlockAvailable || !this.ladderAvailable) {
             this.recordRecommendation(this.selectProgressEvaluation(evaluations), null);
-            this.finishAudit(null, 0, 0);
             return null;
         }
 
-        int supportPlanCount = 0;
         for (CandidateEvaluation evaluation : evaluations) {
             CounterSnapshot before = new CounterSnapshot(this);
             evaluation.supportPlans = this.findSupportPlans(evaluation.trajectory);
             evaluation.progressScore += before.progressSince(this);
-            supportPlanCount += evaluation.supportPlans.size();
         }
         CandidateEvaluation support = this.selectPlanEvaluation(evaluations, false);
         AutoLadderPlan selected = support == null ? null : support.bestSupportPlan();
         this.recordRecommendation(support == null
                 ? this.selectProgressEvaluation(evaluations) : support, selected);
-        this.finishAudit(selected, 0, supportPlanCount);
         return selected;
-    }
-
-    public String getAuditSummary() {
-        return this.auditSummary;
     }
 
     public AutoLadderFallAdjustment getRecommendedFallAdjustment() {
         return this.recommendedFallAdjustment;
-    }
-
-    public double getRecommendedCenterError() {
-        return this.recommendedCenterError;
-    }
-
-    private void finishAudit(@Nullable AutoLadderPlan selected, int directPlans, int supportPlans) {
-        this.auditSummary = "landing=[" + this.landingBlock.B() + ", "
-                + this.landingBlock.E() + ", " + this.landingBlock.A() + "]"
-                + " trajectories=" + this.evaluatedTrajectoryCount
-                + " fallInput=" + this.recommendedFallAdjustment.describe()
-                + " centerError=" + (Double.isInfinite(this.recommendedCenterError)
-                ? "unknown" : Math.round(this.recommendedCenterError * 100.0) / 100.0)
-                + " points=" + this.trajectoryPointCount
-                + " grid=" + this.gridCellCount
-                + " catchLayers=" + this.catchLayerSummary()
-                + " catchCells=" + this.catchCellCount
-                + " catchGeometry=" + this.catchGeometryCount
-                + " sweptCatch=" + this.sweptCatchSampleCount
-                + " direct{ladders=" + this.existingLadderCount
-                + ",supports=" + this.directSupportCount
-                + ",windows=" + this.directOpportunityCount
-                + ",ladderTopRejected=" + this.directLadderTopRejectedCount
-                + ",plans=" + directPlans + '}'
-                + " fallback{spaces=" + this.fallbackSpaceCount
-                + ",anchors=" + this.fallbackAnchorCount
-                + ",blockWindows=" + this.fallbackBlockOpportunityCount
-                + ",landingRejected=" + this.fallbackLandingRejectedCount
-                + ",preControlCollisionRejected=" + this.fallbackCollisionRejectedCount
-                + ",ladderWindows=" + this.fallbackLadderOpportunityCount
-                + ",twoTickRejected=" + this.fallbackTimingRejectedCount
-                + ",movementRejected=" + this.fallbackMovementRejectedCount
-                + ",controlledCollisionRejected=" + this.fallbackControlledCollisionRejectedCount
-                + ",ladderTopRejected=" + this.fallbackLadderTopRejectedCount
-                + ",plans=" + supportPlans + '}'
-                + " inertia{simulations=" + this.inertiaSimulationCount
-                + ",groundRejected=" + this.inertiaGroundRejectedCount
-                + ",supportRejected=" + this.inertiaSupportRejectedCount
-                + ",ladderTopRejected=" + this.inertiaLadderTopRejectedCount
-                + ",missRejected=" + this.inertiaMissRejectedCount + '}'
-                + " selected=" + (selected == null ? "none" : selected.describe());
     }
 
     private List<TrajectoryCandidate> simulateTrajectories() {
@@ -239,8 +171,6 @@ public final class AutoLadderPlanner {
                     finalPoint.z - (this.landingBlock.A() + 0.5));
             trajectories.add(new TrajectoryCandidate(
                     points, this.findCatchSamples(points), adjustment, centerError));
-            this.trajectoryPointCount += points.size();
-            ++this.evaluatedTrajectoryCount;
         }
         return trajectories;
     }
@@ -355,7 +285,6 @@ public final class AutoLadderPlanner {
                         return;
                     }
                     if (this.isUnsafeLandingSupport(candidate, supportBlock)) {
-                        ++this.fallbackLandingRejectedCount;
                         return;
                     }
                     if (!ClutchPlacementPathUtils.isPlacementSpaceClear(this.world, this.player, supportBlock)) {
@@ -472,17 +401,13 @@ public final class AutoLadderPlanner {
                                       @Nullable AutoLadderPlan plan) {
         if (plan != null) {
             this.recommendedFallAdjustment = plan.getFallAdjustment();
-            this.recommendedCenterError = evaluation == null
-                    ? Double.POSITIVE_INFINITY : evaluation.trajectory.centerError;
             return;
         }
         if (evaluation == null) {
             this.recommendedFallAdjustment = AutoLadderFallAdjustment.PHYSICAL;
-            this.recommendedCenterError = Double.POSITIVE_INFINITY;
             return;
         }
         this.recommendedFallAdjustment = evaluation.trajectory.adjustment;
-        this.recommendedCenterError = evaluation.trajectory.centerError;
     }
 
     @Nullable
@@ -490,10 +415,8 @@ public final class AutoLadderPlanner {
                                                      int controlStartTick,
                                                      BlockData ladderBlock,
                                                      BlockData supportBlock) {
-        ++this.inertiaSimulationCount;
         TrajectoryPoint start = this.pointAtTick(trajectory, controlStartTick);
         if (start == null || start.snapshot == null) {
-            ++this.inertiaMissRejectedCount;
             return null;
         }
         BlockPathPlanner simulation = new BlockPathPlanner(
@@ -529,7 +452,6 @@ public final class AutoLadderPlanner {
             if (current.intersectsUnitBlock(supportBlock, SUPPORT_CLEARANCE_MARGIN)
                     || previous.sweptIntersectsUnitBlock(
                     current, supportBlock, SUPPORT_CLEARANCE_MARGIN)) {
-                ++this.inertiaSupportRejectedCount;
                 return null;
             }
             double ladderTop = ladderBlock.B() + 1.0;
@@ -538,12 +460,10 @@ public final class AutoLadderPlanner {
                         previous, current, ladderTop);
                 if (topCrossing.horizontallyIntersects(
                         ladderBounds, LADDER_TOP_CLEARANCE_MARGIN)) {
-                    ++this.inertiaLadderTopRejectedCount;
                     return null;
                 }
             }
             if (current.onGround) {
-                ++this.inertiaGroundRejectedCount;
                 return null;
             }
             if (this.isSafeCatchPosition(current, ladderBlock, supportBlock)
@@ -552,12 +472,10 @@ public final class AutoLadderPlanner {
                         this.centerError(current, ladderBlock));
             }
             if (current.y < ladderBlock.B() - 0.05 || current.motionY >= 0.0) {
-                ++this.inertiaMissRejectedCount;
                 return null;
             }
             previous = current;
         }
-        ++this.inertiaMissRejectedCount;
         return null;
     }
 
@@ -661,7 +579,7 @@ public final class AutoLadderPlanner {
                 && initialLadderY >= minimumLadderY
                 && initial.y <= initialEntryY + 1.0E-4) {
             this.addCatchSample(samples,
-                    new CatchSample(initial, initial.tick, initialLadderY, false), false);
+                    new CatchSample(initial, initial.tick, initialLadderY), false);
         }
         for (int index = 1; index < trajectory.size(); ++index) {
             TrajectoryPoint previous = trajectory.get(index - 1);
@@ -682,7 +600,7 @@ public final class AutoLadderPlanner {
                 TrajectoryPoint sweptPoint = TrajectoryPoint.interpolateAtY(
                         previous, current, sideEntryY);
                 this.addCatchSample(samples,
-                        new CatchSample(sweptPoint, previous.tick, ladderY, true), true);
+                        new CatchSample(sweptPoint, previous.tick, ladderY), true);
             }
             int ladderY = MathUtil.floor(current.y + 1.0E-4);
             double sideEntryY = ladderY + 1.0 - LADDER_SIDE_ENTRY_DEPTH;
@@ -690,7 +608,7 @@ public final class AutoLadderPlanner {
                     && ladderY >= minimumLadderY
                     && current.y >= ladderY && current.y <= sideEntryY + 1.0E-4) {
                 this.addCatchSample(samples,
-                        new CatchSample(current, current.tick, ladderY, false), false);
+                        new CatchSample(current, current.tick, ladderY), false);
             }
         }
         return new ArrayList<>(samples.values());
@@ -705,24 +623,6 @@ public final class AutoLadderPlanner {
             return;
         }
         samples.put(key, sample);
-        this.recordCatchLayer(sample.ladderY);
-        if (sample.swept && (previous == null || !previous.swept)) {
-            ++this.sweptCatchSampleCount;
-        }
-    }
-
-    private void recordCatchLayer(int ladderY) {
-        this.minimumCatchLayer = Math.min(this.minimumCatchLayer, ladderY);
-        this.maximumCatchLayer = Math.max(this.maximumCatchLayer, ladderY);
-    }
-
-    private String catchLayerSummary() {
-        if (this.minimumCatchLayer == Integer.MAX_VALUE) {
-            return "none";
-        }
-        return this.minimumCatchLayer == this.maximumCatchLayer
-                ? String.valueOf(this.minimumCatchLayer)
-                : this.minimumCatchLayer + ".." + this.maximumCatchLayer;
     }
 
     private void enumerateCatchCells(TrajectoryPoint point, int ladderY,
@@ -734,8 +634,7 @@ public final class AutoLadderPlanner {
             for (int zOffset = -searchRadius; zOffset <= searchRadius; ++zOffset) {
                 BlockData ladderBlock = new BlockData(
                         baseX + xOffset, ladderY, baseZ + zOffset);
-                ++this.gridCellCount;
-                ++this.catchCellCount;
+                ++this.catchGeometryCount;
                 for (EnumFacing facing : HORIZONTAL_FACINGS) {
                     double[] catchPoint = this.computeCatchPoint(ladderBlock);
                     double movementError = Math.hypot(catchPoint[0] - point.x, catchPoint[1] - point.z);
@@ -910,14 +809,12 @@ public final class AutoLadderPlanner {
         private final TrajectoryPoint point;
         private final int latestPlacementTick;
         private final int ladderY;
-        private final boolean swept;
 
         private CatchSample(TrajectoryPoint point, int latestPlacementTick,
-                            int ladderY, boolean swept) {
+                            int ladderY) {
             this.point = point;
             this.latestPlacementTick = latestPlacementTick;
             this.ladderY = ladderY;
-            this.swept = swept;
         }
     }
 

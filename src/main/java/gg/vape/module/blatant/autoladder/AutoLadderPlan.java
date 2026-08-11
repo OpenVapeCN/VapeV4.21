@@ -94,27 +94,6 @@ public final class AutoLadderPlan {
         return this.fallAdjustment;
     }
 
-    public String describe() {
-        BlockData ladder = this.getLadderBlock();
-        StringBuilder description = new StringBuilder(this.mode.name())
-                .append(" ladder=").append(ladder)
-                .append(" support=").append(this.getSupportBlock())
-                .append(" face=").append(this.getLadderFacing().Y())
-                .append(" catchPos=[")
-                .append(Math.round(this.catchX * 100.0) / 100.0).append(',')
-                .append(Math.round(this.catchZ * 100.0) / 100.0).append(']')
-                .append(" catchEta=").append(this.catchTick)
-                .append(" blockReach=").append(this.blockPlacementTick)
-                .append(" ladderReach=").append(this.ladderPlacementTick)
-                .append(" fallInput=").append(this.fallAdjustment.describe())
-                .append(" score=").append(Math.round(this.score * 10.0) / 10.0);
-        if (this.blockTarget != null) {
-            description.append(" anchor=").append(this.blockTarget.supportBlock)
-                    .append('/').append(this.blockTarget.facing.Y());
-        }
-        return description.toString();
-    }
-
     public String rejectionKey() {
         BlockData ladder = this.getLadderBlock();
         StringBuilder key = new StringBuilder(this.mode.name())

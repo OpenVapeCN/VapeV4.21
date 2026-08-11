@@ -34,11 +34,12 @@ public final class AutoLadderMovementController {
 
     public static CenterInput chooseCentering(EntityPlayerSP player, World world,
                                               double centerX, double centerZ) {
+        BlockPlacementGraph graph = new BlockPlacementGraph(player);
         CenterInput bestInput = INPUTS[0];
         double bestScore = Double.POSITIVE_INFINITY;
         for (CenterInput input : INPUTS) {
             double score = simulateCenteringInput(
-                    player, world, input, centerX, centerZ);
+                    player, world, graph, input, centerX, centerZ);
             if (score < bestScore) {
                 bestScore = score;
                 bestInput = input;
@@ -48,9 +49,9 @@ public final class AutoLadderMovementController {
     }
 
     private static double simulateCenteringInput(EntityPlayerSP player, World world,
+                                                 BlockPlacementGraph graph,
                                                  CenterInput input,
                                                  double centerX, double centerZ) {
-        BlockPlacementGraph graph = new BlockPlacementGraph(player);
         BlockPathPlanner simulation = new BlockPathPlanner(player, player, world, graph);
         simulation.applySnapshot(graph);
         simulation.setInput(input.forward, input.backward, input.left, input.right, false, false);

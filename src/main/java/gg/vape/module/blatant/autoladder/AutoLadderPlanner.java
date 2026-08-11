@@ -127,11 +127,10 @@ public final class AutoLadderPlanner {
                     trajectory, directPlans, before.progressSince(this));
             evaluations.add(evaluation);
         }
-        CandidateEvaluation direct = this.selectPlanEvaluation(evaluations, true);
+        PlanSelection direct = this.selectPlanEvaluation(evaluations, true);
         if (direct != null) {
-            AutoLadderPlan selected = direct.bestDirectPlan();
-            this.recordRecommendation(direct, selected);
-            return selected;
+            this.recordRecommendation(direct.evaluation, direct.plan);
+            return direct.plan;
         }
         if (!this.allowSupportBlock || !this.supportBlockAvailable || !this.ladderAvailable) {
             this.recordRecommendation(this.selectProgressEvaluation(evaluations), null);
@@ -143,10 +142,10 @@ public final class AutoLadderPlanner {
             evaluation.supportPlans = this.findSupportPlans(evaluation.trajectory);
             evaluation.progressScore += before.progressSince(this);
         }
-        CandidateEvaluation support = this.selectPlanEvaluation(evaluations, false);
-        AutoLadderPlan selected = support == null ? null : support.bestSupportPlan();
+        PlanSelection support = this.selectPlanEvaluation(evaluations, false);
+        AutoLadderPlan selected = support == null ? null : support.plan;
         this.recordRecommendation(support == null
-                ? this.selectProgressEvaluation(evaluations) : support, selected);
+                ? this.selectProgressEvaluation(evaluations) : support.evaluation, selected);
         return selected;
     }
 
@@ -356,9 +355,9 @@ public final class AutoLadderPlanner {
     }
 
     @Nullable
-    private CandidateEvaluation selectPlanEvaluation(List<CandidateEvaluation> evaluations,
-                                                     boolean direct) {
-        CandidateEvaluation selected = null;
+    private PlanSelection selectPlanEvaluation(List<CandidateEvaluation> evaluations,
+                                               boolean direct) {
+        PlanSelection selected = null;
         double selectedScore = Double.POSITIVE_INFINITY;
         for (CandidateEvaluation evaluation : evaluations) {
             List<AutoLadderPlan> plans = direct
@@ -372,8 +371,8 @@ public final class AutoLadderPlanner {
                     - Math.min(8, plans.size()) * PLAN_COUNT_BONUS;
             if (selected == null || score < selectedScore
                     || score == selectedScore
-                    && evaluation.trajectory.centerError < selected.trajectory.centerError) {
-                selected = evaluation;
+                    && evaluation.trajectory.centerError < selected.evaluation.trajectory.centerError) {
+                selected = new PlanSelection(evaluation, bestPlan);
                 selectedScore = score;
             }
         }
@@ -857,6 +856,16 @@ public final class AutoLadderPlanner {
         private AutoLadderPlan bestSupportPlan() {
             return this.supportPlans.stream()
                     .min(Comparator.comparingDouble(AutoLadderPlan::getScore)).orElse(null);
+        }
+    }
+
+    private static final class PlanSelection {
+        private final CandidateEvaluation evaluation;
+        private final AutoLadderPlan plan;
+
+        private PlanSelection(CandidateEvaluation evaluation, AutoLadderPlan plan) {
+            this.evaluation = evaluation;
+            this.plan = plan;
         }
     }
 

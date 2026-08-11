@@ -512,6 +512,10 @@ extends Wrapper {
         return MEntity.m(Entity.vapeInstance.getMappings().Rr, this.I);
     }
 
+    public float getFallDistance() {
+        return this.M$src$F$ff28gb();
+    }
+
     public void B(double d, double d2, double d3) {
         MEntity.y(Entity.vapeInstance.getMappings().Rr, this.I, d, d2, d3);
     }

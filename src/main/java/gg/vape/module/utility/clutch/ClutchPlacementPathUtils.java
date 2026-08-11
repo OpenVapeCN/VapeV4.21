@@ -126,12 +126,20 @@ public class ClutchPlacementPathUtils {
 
     public static Vec3 findBestPlacementHitPoint(EntityPlayerSP player, World world, Vec3 eyePosition,
                                                    PlacementTarget placementTarget, float yaw, float pitch) {
-        return findClosestPlacementHitPoint(player, world, eyePosition, placementTarget, yaw, pitch, true);
+        return findClosestPlacementHitPoint(player, world, eyePosition, placementTarget,
+                yaw, pitch, true, Double.POSITIVE_INFINITY);
+    }
+
+    public static Vec3 findBestPlacementHitPointWithinReach(
+            EntityPlayerSP player, World world, Vec3 eyePosition,
+            PlacementTarget placementTarget, float yaw, float pitch, double maximumDistance) {
+        return findClosestPlacementHitPoint(player, world, eyePosition, placementTarget,
+                yaw, pitch, true, maximumDistance);
     }
 
     private static Vec3 findClosestPlacementHitPoint(EntityPlayerSP player, World world, Vec3 eyePosition,
-                                                      PlacementTarget placementTarget, float yaw, float pitch,
-                                                      boolean useRayTraceUtility) {
+                                                       PlacementTarget placementTarget, float yaw, float pitch,
+                                                       boolean useRayTraceUtility, double maximumDistance) {
         BlockData supportBlock = placementTarget.supportBlock;
         EnumFacing facing = placementTarget.facing;
         AxisAlignedBB bounds = BlockUtil.F(world, supportBlock);
@@ -139,6 +147,16 @@ public class ClutchPlacementPathUtils {
             return RotationUtil.M(eyePosition, bounds, 0.0, 0.0, 0.0).toVec3();
         }
         bounds = bounds.contract(0.002, 0.002, 0.002);
+        double distanceLimit = maximumDistance + 1.0E-4;
+        double dx = Math.max(0.0, Math.max(bounds.getMinX() - eyePosition.getX(),
+                eyePosition.getX() - bounds.getMaxX()));
+        double dy = Math.max(0.0, Math.max(bounds.getMinY() - eyePosition.getY(),
+                eyePosition.getY() - bounds.getMaxY()));
+        double dz = Math.max(0.0, Math.max(bounds.getMinZ() - eyePosition.getZ(),
+                eyePosition.getZ() - bounds.getMaxZ()));
+        if (dx * dx + dy * dy + dz * dz > distanceLimit * distanceLimit) {
+            return null;
+        }
         Vec3i direction = facing.getDirectionVector();
         double width = bounds.getMaxX() - bounds.getMinX();
         double depth = bounds.getMaxZ() - bounds.getMinZ();
@@ -153,18 +171,21 @@ public class ClutchPlacementPathUtils {
         for (int horizontalInset = 0; horizontalInset <= 70; horizontalInset += 10) {
             double horizontalScale = 1.0 - (double)horizontalInset / 100.0;
             double insetX = width / 2.0 * horizontalScale;
-            double insetZ = height / 2.0 * horizontalScale;
+            double insetZ = depth / 2.0 * horizontalScale;
             double minX = bounds.getMinX() + (directionX > 0.0 ? width : (directionX < 0.0 ? 0.0 : insetX));
             double minZ = bounds.getMinZ() + (directionZ > 0.0 ? depth : (directionZ < 0.0 ? 0.0 : insetZ));
             double maxX = bounds.getMaxX() - (directionX < 0.0 ? width : (directionX > 0.0 ? 0.0 : insetX));
             double maxZ = bounds.getMaxZ() - (directionZ < 0.0 ? depth : (directionZ > 0.0 ? 0.0 : insetZ));
             verticalLoop: for (int verticalInset = 0; verticalInset <= 70; verticalInset += 10) {
                 double verticalScale = 1.0 - (double)verticalInset / 100.0;
-                double insetY = depth / 2.0 * verticalScale;
+                double insetY = height / 2.0 * verticalScale;
                 double minY = bounds.getMinY() + (directionY > 0.0 ? height : (directionY < 0.0 ? 0.0 : insetY));
                 double maxY = bounds.getMaxY() - (directionY < 0.0 ? height : (directionY > 0.0 ? 0.0 : insetY));
                 Vec3[] corners = createFaceCorners(facingIndex, minX, minY, minZ, maxX, maxY, maxZ);
                 for (Vec3 corner : corners) {
+                    if (eyePosition.distanceTo(corner) > maximumDistance + 1.0E-4) {
+                        continue;
+                    }
                     Vec3d candidate = new Vec3d(corner.getX(), corner.getY(), corner.getZ());
                     double rotationDistance = calculateRotationDistance(rotationOrigin, candidate, yaw, pitch);
                     if (rotationDistance >= bestRotationDistance || rotationDistance <= 0.5) {
@@ -409,7 +430,8 @@ public class ClutchPlacementPathUtils {
 
     public static Vec3 findPlacementHitPoint(EntityPlayerSP player, World world, Vec3 eyePosition,
                                                PlacementTarget placementTarget, float yaw, float pitch) {
-        return findClosestPlacementHitPoint(player, world, eyePosition, placementTarget, yaw, pitch, false);
+        return findClosestPlacementHitPoint(player, world, eyePosition, placementTarget,
+                yaw, pitch, false, Double.POSITIVE_INFINITY);
     }
     public static boolean canRayTracePlacement(BlockData sourceBlock, EntityPlayerSP player, World world, BlockData targetBlock, EnumFacing facing) {
         AxisAlignedBB targetBounds = BlockUtil.F(world, targetBlock).contract(0.002, 0.002, 0.002);

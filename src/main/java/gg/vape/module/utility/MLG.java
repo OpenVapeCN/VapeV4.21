@@ -13,6 +13,7 @@ import gg.vape.module.blatant.blockin.BlockPlacementGraph;
 import gg.vape.module.blatant.blockin.BlockPlacementUtility;
 import gg.vape.module.blatant.blockin.HotbarSlotResolution;
 import gg.vape.module.blatant.blockin.HotbarSlotResolutionWithValue;
+import gg.vape.module.control.FallRescuePriorityManager;
 import gg.vape.module.control.SharedModuleControlClaims;
 import gg.vape.module.utility.inventory.ItemStackActionPredicate;
 import gg.vape.module.utility.mlg.MLGPlacementController;
@@ -259,6 +260,13 @@ extends Mod {
             this.accumulatedFall = 0.0;
         }
         this.lastHealth = health;
+        if (FallRescuePriorityManager.INSTANCE.shouldStandDown(this, localPlayer)) {
+            if (this.state != MLGState.IDLE) {
+                this.closeInventory();
+                this.resetState();
+            }
+            return;
+        }
         if (this.state == MLGState.IDLE && !this.shouldActivate()) {
             return;
         }

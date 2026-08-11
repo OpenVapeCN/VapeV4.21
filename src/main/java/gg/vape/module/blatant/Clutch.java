@@ -17,6 +17,9 @@ import gg.vape.module.Mod;
 import gg.vape.module.ModuleDisplayInfo;
 import gg.vape.module.VisibleModuleList;
 import gg.vape.module.blatant.blockin.BlockInBooleanState;
+import gg.vape.module.blatant.autoladder.AutoLadderMovementController;
+import gg.vape.module.blatant.clutch.ClutchLadderPlan;
+import gg.vape.module.blatant.clutch.ClutchLadderPlanner;
 import gg.vape.module.blatant.clutch.ClutchPlacementSearchStrategy;
 import gg.vape.module.blatant.clutch.ClutchSearchPlanner;
 import gg.vape.module.blatant.blockin.BlockInTargetRotationState;
@@ -29,12 +32,11 @@ import gg.vape.module.blatant.clutch.EntityFixedRotationController;
 import gg.vape.module.control.SharedModuleControlClaims;
 import gg.vape.module.none.ClientSettings;
 import gg.vape.module.render.hud.FreeLookHudModule;
+import gg.vape.module.utility.RescueModuleUtil;
 import gg.vape.module.utility.clutch.ClutchPlacementPathUtils;
 import gg.vape.module.utility.clutch.PlacementTarget;
 import gg.vape.movement.MovementInputHelper;
 import gg.vape.notification.Notification;
-import gg.vape.notification.NotificationType;
-import gg.vape.notification.TextNotificationContent;
 import gg.vape.rotation.AdaptiveRotationController;
 import gg.vape.rotation.FixedRotationController;
 import gg.vape.rotation.RotationAngles;
@@ -60,6 +62,7 @@ import gg.vape.wrapper.impl.AxisAlignedBB;
 import gg.vape.wrapper.impl.Block;
 import gg.vape.wrapper.impl.BlockPos;
 import gg.vape.wrapper.impl.BlockState;
+import gg.vape.wrapper.impl.Blocks;
 import gg.vape.wrapper.impl.EntityPlayer;
 import gg.vape.wrapper.impl.EntityPlayerSP;
 import gg.vape.wrapper.impl.EnumFacing;
@@ -68,6 +71,7 @@ import gg.vape.wrapper.impl.GameSettings;
 import gg.vape.wrapper.impl.GuiScreen;
 import gg.vape.wrapper.impl.InventoryPlayer;
 import gg.vape.wrapper.impl.Item;
+import gg.vape.wrapper.impl.ItemBlock;
 import gg.vape.wrapper.impl.ItemStack;
 import gg.vape.wrapper.impl.KeyBinding;
 import gg.vape.wrapper.impl.Minecraft;
@@ -81,7 +85,6 @@ import gg.vape.wrapper.impl.World;
 import gg.vape.wrapper.impl.WorldClient;
 import java.awt.Color;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -165,6 +168,11 @@ extends Mod {
     private int previousSlot = -1;
     private final BooleanValue onMoreThanXBlocks;
     private final BooleanValue allowStaircaseUp;
+    private final BooleanValue autoLadder;
+    private ClutchLadderPlan ladderPlan;
+    private boolean ladderAssistActive;
+    private float ladderFallDistanceBeforeTick;
+    private String lastLadderFailureReason;
 
     private void resetPendingFail() {
         this.pendingFailMessage = null;
@@ -376,7 +384,8 @@ extends Mod {
         this.blacklistBlocks = LimitValue.create(this, "clutch-blacklist", "Block blacklist", LimitValue.BLOCK_LIST_COLOR, ItemLimitData.DEFAULT_BLOCK_BLACKLIST);
         this.heldWhitelist = BooleanValue.create(this, "Held whitelist", false, "Only activates clutch when a whitelisted block is held\nWill only use held block for Clutching");
         this.whitelistBlocks = LimitValue.create(this, "clutch-allowedblocks", "Held block whitelist", LimitValue.ALLOW_LIST_COLOR, new ItemLimitData("blocks"));
-        this.defaultBlockNames = new ArrayList<String>(Arrays.asList("Wool", "Stone", "Wood Planks", "Red Sandstone", "Stained Clay", "End Stone", "Obsidian"));
+        this.autoLadder = BooleanValue.create(this, "Auto ladder", true, "When the platform would be unreachable in time, quickly extends blocks and places a ladder to catch the fall");
+        this.defaultBlockNames = new ArrayList<String>(RescueModuleUtil.PREFERRED_BLOCK_NAMES);
         this.rotationClaim = SharedModuleControlClaims.rotation;
         this.movementLock = SharedModuleControlClaims.movementInput;
         this.landTimer = new TimerUtil();
@@ -394,8 +403,8 @@ extends Mod {
         this.limitBlocks.addDependentValues(this.maxBlocks);
         this.silentAim.getDisabledCondition().applyTo(this.resetAngle);
         this.resetAngle.setOverrideColor(ThemeColors.J.r);
-        this.addValue(this.onVoid, this.onLethalFall, this.onMoreThanXBlocks, this.blocksThreshold, this.speed, this.silentAim, this.resetAngle, this.resetAngleDelay, this.returnToLastSlot, this.returnDelay, this.clutchMoveDelay, this.failDelay, this.allowStaircaseUp, this.showBlockCount, this.limitBlocks, this.maxBlocks, this.blacklist, this.blacklistBlocks, this.heldWhitelist, this.whitelistBlocks);
-        this.rotationClaim.setPriority(this, 50);
+        this.addValue(this.onVoid, this.onLethalFall, this.onMoreThanXBlocks, this.blocksThreshold, this.autoLadder, this.speed, this.silentAim, this.resetAngle, this.resetAngleDelay, this.returnToLastSlot, this.returnDelay, this.clutchMoveDelay, this.failDelay, this.allowStaircaseUp, this.showBlockCount, this.limitBlocks, this.maxBlocks, this.blacklist, this.blacklistBlocks, this.heldWhitelist, this.whitelistBlocks);
+        this.rotationClaim.setPriority(this, 60);
     }
 
     @EventHandler
@@ -508,6 +517,47 @@ extends Mod {
         return (int)score;
     }
 
+    private boolean isFallTriggered(EntityPlayerSP localPlayer) {
+        if (localPlayer.b$src$Z$fqlxe4() && localPlayer.q() < 0.0) {
+            return false;
+        }
+        if (localPlayer.S$src$Z$151gttj() || localPlayer.f$src$Z$fst3rk() || localPlayer.h$src$Z$ftwoya()) {
+            return false;
+        }
+        if (!(this.onVoid.getEffectiveValue().booleanValue() || this.onLethalFall.getEffectiveValue().booleanValue() || this.onMoreThanXBlocks.getEffectiveValue().booleanValue())) {
+            return false;
+        }
+        BlockCoordinate landingBlock = this.findLandingBlockSimple(50, localPlayer);
+        boolean fallingIntoVoid = false;
+        boolean lethalFall = false;
+        boolean exceedsBlockThreshold = false;
+        if (landingBlock != null) {
+            if (this.onLethalFall.getEffectiveValue().booleanValue() && localPlayer.N() - (double)landingBlock.E() - 3.0 > (double)localPlayer.w$src$F$15l9epb()) {
+                lethalFall = true;
+            }
+            if (this.onMoreThanXBlocks.getEffectiveValue().booleanValue() && localPlayer.N() - (double)(landingBlock.E() + 1) >= (Double)this.blocksThreshold.getValue()) {
+                exceedsBlockThreshold = true;
+            }
+        } else {
+            fallingIntoVoid = this.onVoid.getEffectiveValue();
+        }
+        return fallingIntoVoid || lethalFall || exceedsBlockThreshold;
+    }
+
+    public boolean canHandleFall(EntityPlayerSP localPlayer) {
+        if (!this.isEnabled() || localPlayer == null || localPlayer.isNull()) {
+            return false;
+        }
+        if (this.graph == null || !this.failTimer.hasTimeElapsed(((Double)this.failDelay.getValue()).longValue())) {
+            return false;
+        }
+        return this.findBlockItem(localPlayer) != null && this.isFallTriggered(localPlayer);
+    }
+
+    public boolean isRescueEngaged() {
+        return this.clutchPath != null;
+    }
+
     private void planPlacementSearch(BlockPlacementPathSegment pathSegment, EntityPlayerSP localPlayer, World world, ArrayList<Vec3d> candidatePositions) {
         if (pathSegment == null) {
             return;
@@ -586,12 +636,7 @@ extends Mod {
             return null;
         }
         int blockCount = this.clutchPath == null ? this.countBlocks() : this.clutchPath.getPendingPlacementCount();
-        Color countColor = new Color(255, 20, 20);
-        if (blockCount >= 32) {
-            countColor = new Color(2, 190, 58);
-        } else if (blockCount >= 16) {
-            countColor = new Color(255, 249, 18);
-        }
+        Color countColor = RescueModuleUtil.countColor(blockCount);
         String statusFormatting;
         if (this.clutchPath != null) {
             statusFormatting = "\u00a7f\u00a7l";
@@ -658,20 +703,8 @@ extends Mod {
     }
 
     private void showFailNotification(String message, boolean forceUpdate) {
-        boolean shouldEnqueue = false;
-        boolean expired = this.failNotification != null && this.failNotification.isExpired();
-        if (this.failNotification == null) {
-            this.failNotification = new Notification(NotificationType.ALERT, "Clutch Failed", new TextNotificationContent(message), 0.0, 0.0, 3500L);
-            shouldEnqueue = true;
-        } else if (expired || forceUpdate) {
-            shouldEnqueue = expired;
-            TextNotificationContent content = (TextNotificationContent)this.failNotification.getContent();
-            content.setText(message);
-            this.failNotification.setDuration(3500L);
-        }
-        if (shouldEnqueue) {
-            Vape.INSTANCE.getNotificationManager().enqueue(this.failNotification, false);
-        }
+        this.failNotification = RescueModuleUtil.updateFailNotification(
+                this.failNotification, "Clutch Failed", message, forceUpdate);
     }
 
     private boolean isPlayerMoving() {
@@ -933,7 +966,12 @@ extends Mod {
     }
 
     private boolean selectBlockSlot(EntityPlayerSP localPlayer) {
-        int slot = this.findBestBlockSlot();
+        int slot;
+        if (this.placeTarget != null && this.placeTarget.ladderPlacement) {
+            slot = this.findLadderSlot(localPlayer);
+        } else {
+            slot = this.findBestBlockSlot();
+        }
         if (slot == -1) {
             return false;
         }
@@ -954,22 +992,18 @@ extends Mod {
     }
 
     private int findBestBlockSlot() {
+        InventoryPlayer inventory = Minecraft.thePlayer().V$src$Lgg_vape_wrapper_impl_InventoryPlayer_$erqak6();
         ArrayList<Integer> validSlots = new ArrayList<>();
         for (int i = 0; i < 9; ++i) {
-            ItemStack stack = Minecraft.thePlayer().V$src$Lgg_vape_wrapper_impl_InventoryPlayer_$erqak6().c(i);
+            ItemStack stack = inventory.c(i);
             if (!stack.isNotNull() || !this.isValidBlockItem(stack)) continue;
+            if (this.autoLadder.getEffectiveValue().booleanValue() && this.isLadderStack(stack)) continue;
             validSlots.add(i);
         }
         if (validSlots.isEmpty()) {
             return -1;
         }
-        for (String preferredName : this.defaultBlockNames) {
-            for (Integer slot : validSlots) {
-                if (!Minecraft.thePlayer().V$src$Lgg_vape_wrapper_impl_InventoryPlayer_$erqak6().c(slot).x().contains(preferredName)) continue;
-                return slot;
-            }
-        }
-        return validSlots.get(0);
+        return RescueModuleUtil.findPreferredSlot(inventory, validSlots, this.defaultBlockNames);
     }
 
     private int countBlocks() {
@@ -987,7 +1021,7 @@ extends Mod {
             if (!this.isWhitelistedBlock(heldStack)) {
                 return 0;
             }
-            if (!this.isValidBlockItem(heldStack)) {
+            if (!this.isValidBlockItem(heldStack) || this.autoLadder.getEffectiveValue().booleanValue() && this.isLadderStack(heldStack)) {
                 return 0;
             }
             return heldStack.t();
@@ -995,6 +1029,7 @@ extends Mod {
         for (int i = 0; i < 9; ++i) {
             ItemStack itemStack = inventory.c(i);
             if (itemStack.isNull() || !itemStack.getItem().isInstance(MappedClasses.Vw)) continue;
+            if (this.autoLadder.getEffectiveValue().booleanValue() && this.isLadderStack(itemStack)) continue;
             if (this.isValidBlockItem(itemStack)) {
                 blockCount += itemStack.t();
                 continue;
@@ -1321,6 +1356,8 @@ extends Mod {
     private void resetClutch(EntityPlayerSP localPlayer) {
         this.clutchPath = null;
         this.placeTarget = null;
+        this.ladderPlan = null;
+        this.ladderAssistActive = false;
         this.returnDelayTicks = (int)Math.round(this.returnDelay.getRandomValue());
         if (this.rotationController != null) {
             this.resetRotation(localPlayer);
@@ -1424,6 +1461,8 @@ extends Mod {
             SharedModuleControlClaims.mouseButtons.unlock();
         }
         this.placeTarget = null;
+        this.ladderPlan = null;
+        this.ladderAssistActive = false;
         this.blockGraphMap.clear();
         this.pendingSegments.clear();
         DEBUG_PLACEMENT_PATHS.clear();
@@ -1521,11 +1560,15 @@ extends Mod {
             if (!this.isWhitelistedBlock(heldStack)) {
                 return null;
             }
+            if (!this.isValidBlockItem(heldStack) || this.autoLadder.getEffectiveValue().booleanValue() && this.isLadderStack(heldStack)) {
+                return null;
+            }
             return heldStack;
         }
         for (int i = 0; i < 9; ++i) {
             ItemStack itemStack = inventory.c(i);
             if (itemStack.isNull() || !itemStack.getItem().isInstance(MappedClasses.Vw)) continue;
+            if (this.autoLadder.getEffectiveValue().booleanValue() && this.isLadderStack(itemStack)) continue;
             if (this.isValidBlockItem(itemStack)) {
                 return itemStack;
             }
@@ -1535,6 +1578,83 @@ extends Mod {
             }
         }
         return null;
+    }
+
+    private ItemStack findLadderItem(EntityPlayerSP localPlayer) {
+        InventoryPlayer inventory = localPlayer.V$src$Lgg_vape_wrapper_impl_InventoryPlayer_$erqak6();
+        if (inventory.isNull() || localPlayer.isNull()) {
+            return null;
+        }
+        for (int i = 0; i < 9; ++i) {
+            ItemStack itemStack = inventory.c(i);
+            if (itemStack.isNotNull() && this.isLadderStack(itemStack)) {
+                return itemStack;
+            }
+        }
+        return null;
+    }
+
+    private int findLadderSlot(EntityPlayerSP localPlayer) {
+        InventoryPlayer inventory = localPlayer.V$src$Lgg_vape_wrapper_impl_InventoryPlayer_$erqak6();
+        for (int slot = 0; slot < 9; ++slot) {
+            if (this.isLadderStack(inventory.c(slot))) {
+                return slot;
+            }
+        }
+        return -1;
+    }
+
+    private boolean isLadderStack(ItemStack itemStack) {
+        if (itemStack.isNull() || itemStack.getItem().isNull()) {
+            return false;
+        }
+        Item item = itemStack.getItem();
+        return item.isInstance(MappedClasses.Vw) && new ItemBlock(item).C().equals(Blocks.ladder());
+    }
+
+    private ClutchLadderPlan computeLadderPath(World world, EntityPlayerSP localPlayer) {
+        this.placeYaw = this.savedYaw != -999.0 ? (float)this.savedYaw : (FreeLookHudModule.isActive() ? FreeLookHudModule.getSavedYaw() : localPlayer.J());
+        ClutchLadderPlanner planner = new ClutchLadderPlanner(this, world, localPlayer, this.graph);
+        ClutchLadderPlan plan = planner.findPlan();
+        if (plan == null) {
+            this.lastLadderFailureReason = planner.getFailureReason();
+            return null;
+        }
+        if (this.limitBlocks.getEffectiveValue().booleanValue()) {
+            int requiredBlocks = plan.getPendingPlacementCount();
+            if (requiredBlocks > ((Double)this.maxBlocks.getValue()).intValue()) {
+                this.lastLadderFailureReason = "Ladder rescue requires " + requiredBlocks + " blocks (max: " + ((Double)this.maxBlocks.getValue()).intValue() + ")";
+                return null;
+            }
+        }
+        this.lastLadderFailureReason = null;
+        return plan;
+    }
+
+    private void tickLadderCatch(EntityPlayerSP localPlayer, WorldClient world) {
+        if (this.ladderPlan == null) {
+            this.resetState();
+            return;
+        }
+        boolean onLadder = localPlayer.boolean_S();
+        float fallDistance = localPlayer.getFallDistance();
+        if (onLadder && (fallDistance <= 0.5f || fallDistance + 0.05f < this.ladderFallDistanceBeforeTick)) {
+            this.debugLog("Caught on the ladder. Clutch complete.");
+            this.resetState();
+            return;
+        }
+        this.ladderFallDistanceBeforeTick = fallDistance;
+        BlockData ladderBlock = this.ladderPlan.getLadderBlock();
+        if (!onLadder && localPlayer.N() < (double)ladderBlock.B() - 0.5) {
+            this.queueFailMessage("Missed the ladder!");
+            this.resetState();
+            return;
+        }
+        int worldBottom = ForgeVersion.MC_1_20_6.d() ? world.R() : 0;
+        if (localPlayer.N() <= (double)worldBottom) {
+            this.queueFailMessage("Fell below the world");
+            this.resetState();
+        }
     }
 
     private BlockCoordinate findLandingBlockSimple(int maxTicks, EntityPlayerSP localPlayer) {
@@ -1566,6 +1686,10 @@ extends Mod {
         }
         boolean forwardPressed = gg.vape.config.ClientSettings.isPhysicalKeyDown(Minecraft.gameSettings().Y());
         this.graph = new BlockPlacementGraph(localPlayer);
+        if (this.ladderAssistActive) {
+            this.tickLadderCatch(localPlayer, world);
+            return;
+        }
         if (this.pendingInputApply) {
             this.graph.forwardKeyDown = this.pendingInputForward;
             this.graph.backwardKeyDown = this.pendingInputBack;
@@ -1584,7 +1708,8 @@ extends Mod {
             return;
         }
         ItemStack blockItem = this.findBlockItem(localPlayer);
-        if (flying || localPlayer.S$src$Z$151gttj() || localPlayer.f$src$Z$fst3rk() || blockItem == null) {
+        ItemStack ladderItem = this.autoLadder.getEffectiveValue() != false ? this.findLadderItem(localPlayer) : null;
+        if (flying || localPlayer.S$src$Z$151gttj() || localPlayer.f$src$Z$fst3rk() || blockItem == null && ladderItem == null) {
             this.resetState();
             return;
         }
@@ -1628,26 +1753,26 @@ extends Mod {
             if (this.isPlayerMoving() && this.clutchPath == null) {
                 boolean fallingOrRising = !localPlayer.b$src$Z$fqlxe4() || localPlayer.q() >= 0.0;
                 if (fallingOrRising && !localPlayer.S$src$Z$151gttj() && !localPlayer.f$src$Z$fst3rk() && !localPlayer.h$src$Z$ftwoya() && this.failTimer.hasTimeElapsed(((Double)this.failDelay.getValue()).longValue())) {
-                    BlockCoordinate landingBlock = this.findLandingBlockSimple(50, localPlayer);
-                    boolean fallingIntoVoid = false;
-                    boolean lethalFall = false;
-                    boolean exceedsBlockThreshold = false;
-                    if (landingBlock != null) {
-                        if (this.onLethalFall.getEffectiveValue().booleanValue() && localPlayer.N() - (double)landingBlock.E() - 3.0 > (double)localPlayer.w$src$F$15l9epb()) {
-                            lethalFall = true;
-                        }
-                        if (this.onMoreThanXBlocks.getEffectiveValue().booleanValue() && localPlayer.N() - (double)(landingBlock.E() + 1) >= (Double)this.blocksThreshold.getValue()) {
-                            exceedsBlockThreshold = true;
-                        }
-                    } else {
-                        fallingIntoVoid = this.onVoid.getEffectiveValue();
-                    }
-                    if (fallingIntoVoid || lethalFall || exceedsBlockThreshold) {
+                    if (this.isFallTriggered(localPlayer)) {
                         if (!this.rotationClaim.isOwnedBy(this) && !this.rotationClaim.acquire(this, this.silentAim.getEffectiveValue())) {
                             return;
                         }
                         long searchStartNanos = System.nanoTime();
-                        BlockPlacementPathSegment clutchPath = this.computeClutchPath(world, localPlayer, blockItem);
+                        BlockPlacementPathSegment clutchPath = blockItem != null ? this.computeClutchPath(world, localPlayer, blockItem) : null;
+                        String platformFailureReason = clutchPath == null ? null : clutchPath.failureReason;
+                        boolean ladderSearchFailed = false;
+                        if ((clutchPath == null || clutchPath.hasFailed()) && this.autoLadder.getEffectiveValue().booleanValue() && ladderItem != null && this.ladderPlan == null) {
+                            ClutchLadderPlan ladderPlan = this.computeLadderPath(world, localPlayer);
+                            if (ladderPlan != null) {
+                                this.ladderPlan = ladderPlan;
+                                this.ladderAssistActive = false;
+                                this.ladderFallDistanceBeforeTick = localPlayer.getFallDistance();
+                                clutchPath = ladderPlan.getPathSegment();
+                                this.debugLog("Found Auto Ladder rescue path");
+                            } else {
+                                ladderSearchFailed = true;
+                            }
+                        }
                         long searchEndNanos = System.nanoTime();
                         if (clutchPath != null && !clutchPath.hasFailed()) {
                             this.debugLog("\n\n\nFound Clutch Path (" + (double)(searchEndNanos - searchStartNanos) / 1000000.0 + "ms)\n\n\n");
@@ -1670,7 +1795,9 @@ extends Mod {
                             }
                         } else {
                             String failureMessage = null;
-                            if (clutchPath == null) {
+                            if (ladderSearchFailed) {
+                                failureMessage = this.lastLadderFailureReason != null ? this.lastLadderFailureReason : platformFailureReason;
+                            } else if (clutchPath == null) {
                                 if (this.blockGraphMap.size() > 0) {
                                     failureMessage = "Could not find a clutch path!";
                                 }
@@ -1684,6 +1811,8 @@ extends Mod {
                                 this.queueFailMessage(failureMessage);
                             }
                             this.resetMovementInputs();
+                            this.ladderPlan = null;
+                            this.lastLadderFailureReason = null;
                             this.clutchPath = null;
                             this.failTimer.reset();
                         }
@@ -1769,6 +1898,15 @@ extends Mod {
                     }
                 }
             }
+            if (this.ladderPlan != null && !this.ladderAssistActive && this.clutchPath != null && this.clutchPath.placementState != null && this.clutchPath.placementState.pendingTargets.isEmpty() && !this.clutchPath.hasFailed()) {
+                this.ladderAssistActive = true;
+                this.ladderFallDistanceBeforeTick = localPlayer.getFallDistance();
+                this.debugLog("Ladder placed. Steering the player into the ladder.");
+            }
+            return;
+        }
+        if (this.ladderAssistActive) {
+            this.tickLadderCatch(localPlayer, world);
             return;
         }
         if (this.clutchPath != null) {
@@ -1809,65 +1947,69 @@ extends Mod {
         if (this.isPlayerMoving() && this.clutchPath == null) {
             boolean fallingOrRising = !localPlayer.b$src$Z$fqlxe4() || localPlayer.q() >= 0.0;
             if (fallingOrRising && !localPlayer.S$src$Z$151gttj() && !localPlayer.f$src$Z$fst3rk() && !localPlayer.h$src$Z$ftwoya() && this.failTimer.hasTimeElapsed(((Double)this.failDelay.getValue()).longValue())) {
-                BlockCoordinate landingBlock = this.findLandingBlockSimple(50, localPlayer);
-                boolean fallingIntoVoid = false;
-                boolean lethalFall = false;
-                boolean exceedsBlockThreshold = false;
-                if (landingBlock != null) {
-                    if (this.onLethalFall.getEffectiveValue().booleanValue() && localPlayer.N() - (double)landingBlock.E() - 3.0 > (double)localPlayer.w$src$F$15l9epb()) {
-                        lethalFall = true;
-                    }
-                    if (this.onMoreThanXBlocks.getEffectiveValue().booleanValue() && localPlayer.N() - (double)(landingBlock.E() + 1) >= (Double)this.blocksThreshold.getValue()) {
-                        exceedsBlockThreshold = true;
-                    }
-                } else {
-                    fallingIntoVoid = this.onVoid.getEffectiveValue();
-                }
-                if (fallingIntoVoid || lethalFall || exceedsBlockThreshold) {
+                if (this.isFallTriggered(localPlayer)) {
                     if (!this.rotationClaim.isOwnedBy(this) && !this.rotationClaim.acquire(this, this.silentAim.getEffectiveValue())) {
                         return;
                     }
-                    long searchStartNanos = System.nanoTime();
-                    BlockPlacementPathSegment clutchPath = this.computeClutchPath(world, localPlayer, blockItem);
-                    long searchEndNanos = System.nanoTime();
-                    if (clutchPath != null && !clutchPath.hasFailed()) {
-                        this.debugLog("\n\n\nFound Clutch Path (" + (double)(searchEndNanos - searchStartNanos) / 1000000.0 + "ms)\n\n\n");
-                        this.captureMovementInputs();
-                        this.resetPendingFail();
-                        this.groundStuckTicks = 0;
-                        this.resetAngleDelayTicks = 0;
-                        this.moveDelayTicks = 0;
-                        this.returnDelayTicks = 0;
-                        this.clutchPath = clutchPath;
-                        this.prevRightClickHeld = jumpPressed;
-                        gameSettings.F().e();
-                        if (!this.silentAim.getEffectiveValue().booleanValue()) {
-                            if (this.savedYaw == -999.0) {
-                                this.savedYaw = FreeLookHudModule.isActive() ? (double)FreeLookHudModule.getSavedPitch() : (double)localPlayer.J();
-                                this.savedPitch = localPlayer.V();
+                        long searchStartNanos = System.nanoTime();
+                        BlockPlacementPathSegment clutchPath = blockItem != null ? this.computeClutchPath(world, localPlayer, blockItem) : null;
+                        String platformFailureReason = clutchPath == null ? null : clutchPath.failureReason;
+                        boolean ladderSearchFailed = false;
+                        if ((clutchPath == null || clutchPath.hasFailed()) && this.autoLadder.getEffectiveValue().booleanValue() && ladderItem != null && this.ladderPlan == null) {
+                            ClutchLadderPlan ladderPlan = this.computeLadderPath(world, localPlayer);
+                            if (ladderPlan != null) {
+                                this.ladderPlan = ladderPlan;
+                                this.ladderAssistActive = false;
+                                this.ladderFallDistanceBeforeTick = localPlayer.getFallDistance();
+                                clutchPath = ladderPlan.getPathSegment();
+                                this.debugLog("Found Auto Ladder rescue path");
+                            } else {
+                                ladderSearchFailed = true;
+                            }
+                        }
+                        long searchEndNanos = System.nanoTime();
+                        if (clutchPath != null && !clutchPath.hasFailed()) {
+                            this.debugLog("\n\n\nFound Clutch Path (" + (double)(searchEndNanos - searchStartNanos) / 1000000.0 + "ms)\n\n\n");
+                            this.captureMovementInputs();
+                            this.resetPendingFail();
+                            this.groundStuckTicks = 0;
+                            this.resetAngleDelayTicks = 0;
+                            this.moveDelayTicks = 0;
+                            this.returnDelayTicks = 0;
+                            this.clutchPath = clutchPath;
+                            this.prevRightClickHeld = jumpPressed;
+                            gameSettings.F().e();
+                            if (!this.silentAim.getEffectiveValue().booleanValue()) {
+                                if (this.savedYaw == -999.0) {
+                                    this.savedYaw = FreeLookHudModule.isActive() ? (double)FreeLookHudModule.getSavedPitch() : (double)localPlayer.J();
+                                    this.savedPitch = localPlayer.V();
+                                }
+                            } else {
+                                this.savedYaw = -999.0;
                             }
                         } else {
-                            this.savedYaw = -999.0;
-                        }
-                    } else {
-                        String failureMessage = null;
-                        if (clutchPath == null) {
-                            if (this.blockGraphMap.size() > 0) {
-                                failureMessage = "Could not find a clutch path!";
+                            String failureMessage = null;
+                            if (ladderSearchFailed) {
+                                failureMessage = this.lastLadderFailureReason != null ? this.lastLadderFailureReason : platformFailureReason;
+                            } else if (clutchPath == null) {
+                                if (this.blockGraphMap.size() > 0) {
+                                    failureMessage = "Could not find a clutch path!";
+                                }
+                            } else {
+                                failureMessage = clutchPath.failureReason;
+                                if (failureMessage == null) {
+                                    failureMessage = "Could not find a clutch path!";
+                                }
                             }
-                        } else {
-                            failureMessage = clutchPath.failureReason;
-                            if (failureMessage == null) {
-                                failureMessage = "Could not find a clutch path!";
+                            if (failureMessage != null && !failureMessage.isEmpty()) {
+                                this.queueFailMessage(failureMessage);
                             }
+                            this.resetMovementInputs();
+                            this.ladderPlan = null;
+                            this.lastLadderFailureReason = null;
+                            this.clutchPath = null;
+                            this.failTimer.reset();
                         }
-                        if (failureMessage != null && !failureMessage.isEmpty()) {
-                            this.queueFailMessage(failureMessage);
-                        }
-                        this.resetMovementInputs();
-                        this.clutchPath = null;
-                        this.failTimer.reset();
-                    }
                 }
             }
         }
@@ -1949,6 +2091,11 @@ extends Mod {
                     }
                 }
             }
+        }
+        if (this.ladderPlan != null && !this.ladderAssistActive && this.clutchPath != null && this.clutchPath.placementState != null && this.clutchPath.placementState.pendingTargets.isEmpty() && !this.clutchPath.hasFailed()) {
+            this.ladderAssistActive = true;
+            this.ladderFallDistanceBeforeTick = localPlayer.getFallDistance();
+            this.debugLog("Ladder placed. Steering the player into the ladder.");
         }
     }
 
@@ -2057,6 +2204,11 @@ extends Mod {
     @EventHandler(priority=EventPriority.LOWEST)
     public void onPreLocalPlayerTick(EventPreLocalPlayerTick eventPreLocalPlayerTick) {
         EntityPlayerSP localPlayer = eventPreLocalPlayerTick.getThePlayer();
+        if (this.ladderAssistActive && this.ladderPlan != null && Minecraft.currentScreen().isNull() && localPlayer.isNotNull()) {
+            AutoLadderMovementController.CenterInput centerInput = AutoLadderMovementController.chooseCentering(localPlayer, localPlayer.getWorld(), this.ladderPlan.getCatchX(), this.ladderPlan.getCatchZ());
+            AutoLadderMovementController.apply(centerInput);
+            return;
+        }
         if (this.clutchPath != null && Minecraft.currentScreen().isNull() && localPlayer.isNotNull()) {
             BlockInBooleanState strafeState = null;
             if (this.rotationController != null && !(this.rotationController instanceof AdaptiveRotationController)) {

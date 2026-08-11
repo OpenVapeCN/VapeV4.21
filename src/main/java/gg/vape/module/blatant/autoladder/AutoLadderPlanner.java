@@ -110,9 +110,10 @@ public final class AutoLadderPlanner {
         List<CandidateEvaluation> evaluations = new ArrayList<>();
         for (TrajectoryCandidate trajectory : trajectories) {
             CounterSnapshot before = new CounterSnapshot(this);
-            List<AutoLadderPlan> directPlans = this.findDirectPlans(trajectory);
             CandidateEvaluation evaluation = new CandidateEvaluation(
-                    trajectory, directPlans, before.progressSince(this));
+                    trajectory, new OpportunityMemo());
+            evaluation.directPlans = this.findDirectPlans(trajectory, evaluation.memo);
+            evaluation.progressScore = before.progressSince(this);
             evaluations.add(evaluation);
         }
         PlanSelection direct = this.selectPlanEvaluation(evaluations, true);
@@ -127,7 +128,8 @@ public final class AutoLadderPlanner {
 
         for (CandidateEvaluation evaluation : evaluations) {
             CounterSnapshot before = new CounterSnapshot(this);
-            evaluation.supportPlans = this.findSupportPlans(evaluation.trajectory);
+            evaluation.supportPlans = this.findSupportPlans(
+                    evaluation.trajectory, evaluation.memo);
             evaluation.progressScore += before.progressSince(this);
         }
         PlanSelection support = this.selectPlanEvaluation(evaluations, false);
@@ -194,7 +196,8 @@ public final class AutoLadderPlanner {
                 this.physicalInput[2], this.physicalInput[3], false, false);
     }
 
-    private List<AutoLadderPlan> findDirectPlans(TrajectoryCandidate candidate) {
+    private List<AutoLadderPlan> findDirectPlans(TrajectoryCandidate candidate,
+                                                  OpportunityMemo memo) {
         Map<String, AutoLadderPlan> plans = new HashMap<>();
         List<TrajectoryPoint> trajectory = candidate.points;
         for (CatchSample catchSample : candidate.catchSamples) {
@@ -226,7 +229,7 @@ public final class AutoLadderPlanner {
                     ++this.directSupportCount;
                     PlacementOpportunity opportunity = this.findPlacementOpportunity(
                             ladderTarget, trajectory, 0,
-                            catchSample.latestPlacementTick, false);
+                            catchSample.latestPlacementTick, false, memo);
                     if (opportunity == null) {
                         return;
                     }
@@ -254,7 +257,8 @@ public final class AutoLadderPlanner {
         return new ArrayList<>(plans.values());
     }
 
-    private List<AutoLadderPlan> findSupportPlans(TrajectoryCandidate candidate) {
+    private List<AutoLadderPlan> findSupportPlans(TrajectoryCandidate candidate,
+                                                  OpportunityMemo memo) {
         Map<String, AutoLadderPlan> plans = new HashMap<>();
         List<TrajectoryPoint> trajectory = candidate.points;
         for (CatchSample catchSample : candidate.catchSamples) {
@@ -285,7 +289,7 @@ public final class AutoLadderPlanner {
                         PlacementTarget blockTarget = new PlacementTarget(anchorBlock, blockFacing);
                         PlacementOpportunity blockOpportunity = this.findPlacementOpportunity(
                                 blockTarget, trajectory, 0,
-                                catchSample.latestPlacementTick, true);
+                                catchSample.latestPlacementTick, true, memo);
                         if (blockOpportunity == null) {
                             continue;
                         }
@@ -298,7 +302,7 @@ public final class AutoLadderPlanner {
                         PlacementOpportunity ladderOpportunity = this.findFutureFaceOpportunity(
                                 ladderTarget, trajectory,
                                 earliestLadderTick,
-                                catchSample.latestPlacementTick);
+                                catchSample.latestPlacementTick, memo);
                         if (ladderOpportunity == null) {
                             continue;
                         }
@@ -593,11 +597,37 @@ public final class AutoLadderPlanner {
                                                            List<TrajectoryPoint> trajectory,
                                                            int earliestTick,
                                                            int latestTick,
-                                                           boolean placingSolidBlock) {
+                                                           boolean placingSolidBlock,
+                                                           OpportunityMemo memo) {
         if (latestTick < earliestTick) {
             return null;
         }
-        PlacementOpportunity best = null;
+        if (earliestTick != 0) {
+            return this.scanPlacementOpportunity(target, trajectory,
+                    earliestTick, latestTick, placingSolidBlock);
+        }
+        Map<OpportunityKey, HitPointMemo> memoMap = placingSolidBlock
+                ? memo.solidHitPoints : memo.nonSolidHitPoints;
+        OpportunityKey key = new OpportunityKey(target.supportBlock, target.facing);
+        HitPointMemo hitPoint = memoMap.get(key);
+        if (hitPoint == null) {
+            hitPoint = this.computeFirstHitPointOpportunity(
+                    target, trajectory, placingSolidBlock);
+            memoMap.put(key, hitPoint);
+        }
+        if (hitPoint.firstValidTick < 0 || hitPoint.firstValidTick > latestTick) {
+            return null;
+        }
+        return new PlacementOpportunity(hitPoint.firstValidTick,
+                hitPoint.firstValidRotationDistance);
+    }
+
+    @Nullable
+    private PlacementOpportunity scanPlacementOpportunity(PlacementTarget target,
+                                                           List<TrajectoryPoint> trajectory,
+                                                           int earliestTick,
+                                                           int latestTick,
+                                                           boolean placingSolidBlock) {
         for (TrajectoryPoint point : trajectory) {
             if (point.tick < earliestTick) {
                 continue;
@@ -618,34 +648,73 @@ public final class AutoLadderPlanner {
             if (hit == null) {
                 continue;
             }
-            double rotationDistance = this.rotationDistance(eye, hit, point.yaw, point.pitch);
-            PlacementOpportunity candidate = new PlacementOpportunity(point.tick, rotationDistance);
-            if (best == null || candidate.tick < best.tick
-                    || candidate.tick == best.tick
-                    && candidate.rotationDistance < best.rotationDistance) {
-                best = candidate;
-            }
+            return new PlacementOpportunity(point.tick,
+                    this.rotationDistance(eye, hit, point.yaw, point.pitch));
         }
-        return best;
+        return null;
+    }
+
+    private HitPointMemo computeFirstHitPointOpportunity(PlacementTarget target,
+                                                          List<TrajectoryPoint> trajectory,
+                                                          boolean placingSolidBlock) {
+        HitPointMemo result = new HitPointMemo();
+        for (TrajectoryPoint point : trajectory) {
+            if (placingSolidBlock && point.intersectsUnitBlock(target.getPlacedBlock())) {
+                continue;
+            }
+            Vec3 eye = point.eyePosition();
+            if (!ClutchPlacementPathUtils.isBlockFaceVisible(
+                    eye, this.world, target.supportBlock, target.facing)) {
+                continue;
+            }
+            Vec3 hit = ClutchPlacementPathUtils.findBestPlacementHitPointWithinReach(
+                    this.player, this.world, eye, target, point.yaw, point.pitch, this.reach);
+            if (hit == null) {
+                continue;
+            }
+            result.firstValidTick = point.tick;
+            result.firstValidRotationDistance = this.rotationDistance(
+                    eye, hit, point.yaw, point.pitch);
+            break;
+        }
+        return result;
     }
 
     @Nullable
     private PlacementOpportunity findFutureFaceOpportunity(PlacementTarget target,
                                                             List<TrajectoryPoint> trajectory,
                                                             int earliestTick,
-                                                            int latestTick) {
+                                                            int latestTick,
+                                                            OpportunityMemo memo) {
         if (latestTick < earliestTick) {
             return null;
         }
+        OpportunityKey key = new OpportunityKey(target.supportBlock, target.facing);
+        int[] validTicks = memo.faceCenterTicks.get(key);
+        if (validTicks == null) {
+            validTicks = this.computeFaceCenterValidTicks(target, trajectory);
+            memo.faceCenterTicks.put(key, validTicks);
+        }
+        int index = lowerBound(validTicks, earliestTick);
+        if (index >= validTicks.length || validTicks[index] > latestTick) {
+            return null;
+        }
+        int tick = validTicks[index];
+        TrajectoryPoint point = this.pointAtTick(trajectory, tick);
+        if (point == null) {
+            return null;
+        }
+        Vec3 eye = point.eyePosition();
         Vec3 faceCenter = this.faceCenter(target.supportBlock, target.facing);
-        PlacementOpportunity best = null;
+        return new PlacementOpportunity(tick,
+                this.rotationDistance(eye, faceCenter, point.yaw, point.pitch));
+    }
+
+    private int[] computeFaceCenterValidTicks(PlacementTarget target,
+                                              List<TrajectoryPoint> trajectory) {
+        Vec3 faceCenter = this.faceCenter(target.supportBlock, target.facing);
+        List<Integer> valid = new ArrayList<>();
         for (TrajectoryPoint point : trajectory) {
-            if (point.tick < earliestTick) {
-                continue;
-            }
-            if (point.tick > latestTick) {
-                break;
-            }
             Vec3 eye = point.eyePosition();
             if (!ClutchPlacementPathUtils.isBlockFaceVisible(
                     eye, this.world, target.supportBlock, target.facing)
@@ -653,14 +722,27 @@ public final class AutoLadderPlanner {
                     || !this.isFutureFaceUnobstructed(eye, faceCenter)) {
                 continue;
             }
-            double rotationDistance = this.rotationDistance(eye, faceCenter, point.yaw, point.pitch);
-            PlacementOpportunity candidate = new PlacementOpportunity(point.tick, rotationDistance);
-            if (best == null || candidate.tick < best.tick
-                    || candidate.tick == best.tick && candidate.rotationDistance < best.rotationDistance) {
-                best = candidate;
+            valid.add(point.tick);
+        }
+        int[] result = new int[valid.size()];
+        for (int index = 0; index < valid.size(); ++index) {
+            result[index] = valid.get(index);
+        }
+        return result;
+    }
+
+    private static int lowerBound(int[] array, int value) {
+        int low = 0;
+        int high = array.length;
+        while (low < high) {
+            int mid = (low + high) >>> 1;
+            if (array[mid] < value) {
+                low = mid + 1;
+            } else {
+                high = mid;
             }
         }
-        return best;
+        return low;
     }
 
     private double rotationDistance(Vec3 eye, Vec3 hit, float yaw, float pitch) {
@@ -773,16 +855,14 @@ public final class AutoLadderPlanner {
 
     private static final class CandidateEvaluation {
         private final TrajectoryCandidate trajectory;
-        private final List<AutoLadderPlan> directPlans;
+        private final OpportunityMemo memo;
+        private List<AutoLadderPlan> directPlans = new ArrayList<>();
         private List<AutoLadderPlan> supportPlans = new ArrayList<>();
         private int progressScore;
 
-        private CandidateEvaluation(TrajectoryCandidate trajectory,
-                                    List<AutoLadderPlan> directPlans,
-                                    int progressScore) {
+        private CandidateEvaluation(TrajectoryCandidate trajectory, OpportunityMemo memo) {
             this.trajectory = trajectory;
-            this.directPlans = directPlans;
-            this.progressScore = progressScore;
+            this.memo = memo;
         }
 
         private AutoLadderPlan bestDirectPlan() {
@@ -881,6 +961,46 @@ public final class AutoLadderPlanner {
             this.catchTick = catchTick;
             this.remainingCenterError = remainingCenterError;
         }
+    }
+
+    /** Per-candidate cache of placement opportunity results, keyed by placement target. */
+    private static final class OpportunityMemo {
+        private final Map<OpportunityKey, HitPointMemo> solidHitPoints = new HashMap<>();
+        private final Map<OpportunityKey, HitPointMemo> nonSolidHitPoints = new HashMap<>();
+        private final Map<OpportunityKey, int[]> faceCenterTicks = new HashMap<>();
+    }
+
+    private static final class OpportunityKey {
+        private final BlockData supportBlock;
+        private final EnumFacing facing;
+
+        private OpportunityKey(BlockData supportBlock, EnumFacing facing) {
+            this.supportBlock = supportBlock;
+            this.facing = facing;
+        }
+
+        @Override
+        public boolean equals(Object object) {
+            if (this == object) {
+                return true;
+            }
+            if (!(object instanceof OpportunityKey)) {
+                return false;
+            }
+            OpportunityKey other = (OpportunityKey)object;
+            return this.supportBlock.equals(other.supportBlock)
+                    && this.facing.Y() == other.facing.Y();
+        }
+
+        @Override
+        public int hashCode() {
+            return this.supportBlock.hashCode() * 31 + this.facing.Y();
+        }
+    }
+
+    private static final class HitPointMemo {
+        private int firstValidTick = -1;
+        private double firstValidRotationDistance;
     }
 
     private static final class PlacementOpportunity {

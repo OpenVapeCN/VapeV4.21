@@ -42,17 +42,49 @@ public final class AutoLadderMovementController {
     public static CenterInput chooseCentering(EntityPlayer sourcePlayer, EntityPlayerSP localPlayer,
                                               World world, BlockPlacementGraph graph,
                                               double centerX, double centerZ) {
+        boolean reusableSimulation = ForgeVersion.MC_1_21_4.d() || ForgeVersion.MC_1_16_5.d();
+        BlockPathPlanner simulation = reusableSimulation
+                ? new BlockPathPlanner(sourcePlayer, localPlayer, world, graph) : null;
         CenterInput bestInput = INPUTS[0];
         double bestScore = Double.POSITIVE_INFINITY;
         for (CenterInput input : INPUTS) {
-            double score = simulateCenteringInput(
-                    sourcePlayer, localPlayer, world, graph, input, centerX, centerZ);
+            double score = reusableSimulation
+                    ? simulateCenteringInput(simulation, graph, input, centerX, centerZ)
+                    : simulateCenteringInput(sourcePlayer, localPlayer, world, graph,
+                            input, centerX, centerZ);
             if (score < bestScore) {
                 bestScore = score;
                 bestInput = input;
             }
         }
         return bestInput;
+    }
+
+    private static double simulateCenteringInput(BlockPathPlanner simulation,
+                                                 BlockPlacementGraph graph,
+                                                 CenterInput input,
+                                                 double centerX, double centerZ) {
+        simulation.applySnapshot(graph);
+        simulation.setInput(input.forward, input.backward, input.left, input.right, false, false);
+        EntityPlayer simulatedPlayer = simulation.getSimulatedPlayer();
+        double bestDistanceSq = Double.POSITIVE_INFINITY;
+        for (int tick = 1; tick <= CENTERING_LOOKAHEAD_TICKS; ++tick) {
+            simulation.simulateTick(false);
+            double deltaX = centerX - simulatedPlayer.z();
+            double deltaZ = centerZ - simulatedPlayer.h();
+            bestDistanceSq = Math.min(bestDistanceSq,
+                    deltaX * deltaX + deltaZ * deltaZ);
+        }
+        double deltaX = centerX - simulatedPlayer.z();
+        double deltaZ = centerZ - simulatedPlayer.h();
+        double finalDistanceSq = deltaX * deltaX + deltaZ * deltaZ;
+        double horizontalSpeedSq = simulatedPlayer.t() * simulatedPlayer.t()
+                + simulatedPlayer.T() * simulatedPlayer.T();
+        double velocityTowardCenter = simulatedPlayer.t() * deltaX
+                + simulatedPlayer.T() * deltaZ;
+        double overshootPenalty = Math.max(0.0, -velocityTowardCenter) * 4000.0;
+        return finalDistanceSq * 10000.0 + bestDistanceSq * 1000.0
+                + horizontalSpeedSq * 150.0 + overshootPenalty;
     }
 
     private static double simulateCenteringInput(EntityPlayer sourcePlayer,

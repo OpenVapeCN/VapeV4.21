@@ -147,6 +147,16 @@ public class ClutchPlacementPathUtils {
             return RotationUtil.M(eyePosition, bounds, 0.0, 0.0, 0.0).toVec3();
         }
         bounds = bounds.contract(0.002, 0.002, 0.002);
+        double distanceLimit = maximumDistance + 1.0E-4;
+        double dx = Math.max(0.0, Math.max(bounds.getMinX() - eyePosition.getX(),
+                eyePosition.getX() - bounds.getMaxX()));
+        double dy = Math.max(0.0, Math.max(bounds.getMinY() - eyePosition.getY(),
+                eyePosition.getY() - bounds.getMaxY()));
+        double dz = Math.max(0.0, Math.max(bounds.getMinZ() - eyePosition.getZ(),
+                eyePosition.getZ() - bounds.getMaxZ()));
+        if (dx * dx + dy * dy + dz * dz > distanceLimit * distanceLimit) {
+            return null;
+        }
         Vec3i direction = facing.getDirectionVector();
         double width = bounds.getMaxX() - bounds.getMinX();
         double depth = bounds.getMaxZ() - bounds.getMinZ();

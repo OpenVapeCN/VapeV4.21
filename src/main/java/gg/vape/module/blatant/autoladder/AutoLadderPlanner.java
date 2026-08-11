@@ -206,9 +206,6 @@ public final class AutoLadderPlanner {
                     Block ladderState = this.blockAt(ladderBlock);
                     if (this.isLadder(ladderState)) {
                         ++this.existingLadderCount;
-                        if (facing.Y() != HORIZONTAL_FACINGS[0].Y()) {
-                            return;
-                        }
                         double existingCatchX = ladderBlock.D() + 0.5;
                         double existingCatchZ = ladderBlock.G() + 0.5;
                         double existingMovementError = Math.hypot(

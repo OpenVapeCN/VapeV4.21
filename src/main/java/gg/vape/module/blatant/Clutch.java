@@ -1613,7 +1613,7 @@ extends Mod {
     }
 
     private ClutchLadderPlan computeLadderPath(World world, EntityPlayerSP localPlayer) {
-        this.placeYaw = this.savedYaw != -999.0 ? (float)this.savedYaw : (FreeLookHudModule.isActive() ? FreeLookHudModule.getSavedPitch() : localPlayer.J());
+        this.placeYaw = this.savedYaw != -999.0 ? (float)this.savedYaw : (FreeLookHudModule.isActive() ? FreeLookHudModule.getSavedYaw() : localPlayer.J());
         ClutchLadderPlanner planner = new ClutchLadderPlanner(this, world, localPlayer, this.graph);
         ClutchLadderPlan plan = planner.findPlan();
         if (plan == null) {
@@ -1811,6 +1811,8 @@ extends Mod {
                                 this.queueFailMessage(failureMessage);
                             }
                             this.resetMovementInputs();
+                            this.ladderPlan = null;
+                            this.lastLadderFailureReason = null;
                             this.clutchPath = null;
                             this.failTimer.reset();
                         }
@@ -2003,6 +2005,8 @@ extends Mod {
                                 this.queueFailMessage(failureMessage);
                             }
                             this.resetMovementInputs();
+                            this.ladderPlan = null;
+                            this.lastLadderFailureReason = null;
                             this.clutchPath = null;
                             this.failTimer.reset();
                         }

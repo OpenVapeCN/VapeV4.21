@@ -22,6 +22,7 @@ import gg.vape.module.blatant.autoladder.AutoLadderState;
 import gg.vape.module.blatant.blockin.BlockPlacementGraph;
 import gg.vape.module.blatant.blockin.BlockPlacementUtility;
 import gg.vape.module.blatant.clutch.EntityFixedRotationController;
+import gg.vape.module.control.FallRescuePriorityManager;
 import gg.vape.module.control.SharedModuleControlClaims;
 import gg.vape.module.none.ClientSettings;
 import gg.vape.module.utility.clutch.ClutchPlacementPathUtils;
@@ -105,6 +106,7 @@ public class AutoLadder extends Mod {
     private final LimitValue blacklistBlocks;
     private final BooleanValue heldWhitelist;
     private final LimitValue whitelistBlocks;
+    private final BooleanValue rescuePriority;
     private final RotationControlClaim rotationClaim;
     private final TimerUtil failTimer;
     private final Set<String> rejectedPlans;
@@ -147,6 +149,9 @@ public class AutoLadder extends Mod {
     private int lastSearchTick = -100;
     private double lastPredictionX;
     private double lastPredictionZ;
+    private boolean warmupPending;
+    private int warmupStage;
+    private BlockCoordinate warmupLanding;
 
     public AutoLadder() {
         super("AutoLadder", 7043655, Category.UTILITY,
@@ -183,6 +188,8 @@ public class AutoLadder extends Mod {
         this.whitelistBlocks = LimitValue.create(this, "autoladder-allowedblocks",
                 "Held block whitelist", LimitValue.ALLOW_LIST_COLOR,
                 Arrays.asList(new ItemLimitData("blocks"), new ItemLimitData("Ladder")));
+        this.rescuePriority = BooleanValue.create(this, "Rescue priority", true,
+                "Fall rescue priority order: Clutch > AutoLadder > MLG. When enabled, only acts when higher-priority rescue modules are unavailable or have failed");
         this.rotationClaim = SharedModuleControlClaims.rotation;
         this.failTimer = new TimerUtil();
         this.rejectedPlans = new HashSet<>();
@@ -199,13 +206,16 @@ public class AutoLadder extends Mod {
         this.addValue(this.onLethalFall, this.onMoreThanXBlocks, this.blocksThreshold,
                 this.silentAim, this.resetAngle, this.returnToLastSlot, this.returnDelay,
                 this.failDelay, this.showLadderCount, this.blacklist, this.blacklistBlocks,
-                this.heldWhitelist, this.whitelistBlocks);
-        this.rotationClaim.setPriority(this, 60);
+                this.heldWhitelist, this.whitelistBlocks, this.rescuePriority);
+        this.rotationClaim.setPriority(this, 50);
     }
 
     @Override
     public void onEnable() {
         this.resetImmediately();
+        this.warmupPending = true;
+        this.warmupStage = 0;
+        this.warmupLanding = null;
         ClientSettings.getFrame(ActiveModuleStackFrame.class).addModule(this);
         this.audit("enabled lethal=" + this.onLethalFall.getEffectiveValue()
                 + " threshold=" + this.onMoreThanXBlocks.getEffectiveValue()
@@ -242,6 +252,14 @@ public class AutoLadder extends Mod {
         if (player.isNull() || world.isNull()) {
             this.resetImmediately();
             return;
+        }
+        if (this.warmupPending) {
+            if (this.state == AutoLadderState.IDLE && this.plan == null
+                    && player.b$src$Z$fqlxe4() && event.getCurrentScreen().isNull()) {
+                this.runWarmupTick(player, world);
+            } else if (this.state != AutoLadderState.IDLE || !player.b$src$Z$fqlxe4()) {
+                this.warmupPending = false;
+            }
         }
         this.tickPostRun(player, event.getCurrentScreen());
         this.fallDistanceBeforeTick = player.getFallDistance();
@@ -281,6 +299,15 @@ public class AutoLadder extends Mod {
         }
         if (!this.canRun(player, event.getCurrentScreen())) {
             if (this.isExecutingPlan()) {
+                this.enterFail(true);
+            } else {
+                this.transition(AutoLadderState.IDLE);
+            }
+            return;
+        }
+        if (FallRescuePriorityManager.INSTANCE.shouldStandDown(this, player)) {
+            this.audit("stand down: higher-priority rescue (Clutch) is available or engaged");
+            if (this.isExecutingPlan() || this.state == AutoLadderState.SEARCHING_BLOCK) {
                 this.enterFail(true);
             } else {
                 this.transition(AutoLadderState.IDLE);
@@ -577,6 +604,61 @@ public class AutoLadder extends Mod {
         return true;
     }
 
+    private void runWarmupTick(EntityPlayerSP player, WorldClient world) {
+        try {
+            switch (this.warmupStage) {
+                case 0:
+                    Blocks.ladder();
+                    BlockPlacementGraph graph = new BlockPlacementGraph(player);
+                    this.warmupLanding = BlockPlacementUtility.predictLandingBlock(
+                            false, 50, player, graph);
+                    if (this.warmupLanding == null) {
+                        this.warmupLanding = new BlockCoordinate(
+                                MathUtil.floor(player.z()),
+                                MathUtil.floor(player.N() - 1.0),
+                                MathUtil.floor(player.h()));
+                    }
+                    BlockPlacementUtility.calculateFallDamage(player, 10.0f);
+                    Vec3 warmupEye = Vec3.create(
+                            player.z(), player.N() + player.X(), player.h());
+                    RotationVectorMath.d(warmupEye,
+                            Vec3.create(warmupEye.getX() + 1.0, warmupEye.getY(), warmupEye.getZ()),
+                            player.J(), player.V());
+                    break;
+                case 1:
+                    AutoLadderPlanner planner = new AutoLadderPlanner(
+                            world, player, true, true, true, true,
+                            new HashSet<>(), this.warmupLanding);
+                    planner.findBestPlan();
+                    break;
+                case 2:
+                    AutoLadderMovementController.chooseCentering(
+                            player, world, player.z(), player.h());
+                    Vec3 eye = Vec3.create(
+                            player.z(), player.N() + player.X(), player.h());
+                    EnumFacing facing = EnumFacing.t()[1];
+                    BlockData support = this.warmupLanding.O();
+                    PlacementTarget target = new PlacementTarget(support, facing);
+                    ClutchPlacementPathUtils.isBlockFaceVisible(eye, world, support, facing);
+                    ClutchPlacementPathUtils.findBestPlacementHitPointWithinReach(
+                            player, world, eye, target,
+                            player.J(), player.V(), Minecraft.playerController().N());
+                    break;
+                default:
+                    break;
+            }
+            ++this.warmupStage;
+            if (this.warmupStage > 2) {
+                this.audit("warmup complete");
+                this.warmupPending = false;
+            }
+        } catch (Throwable error) {
+            this.audit("warmup failed stage=" + this.warmupStage
+                    + ": " + Vape.formatThrowable(error));
+            this.warmupPending = false;
+        }
+    }
+
     private void searchForPlan(EntityPlayerSP player, World world) {
         this.restoreMovementInput();
         this.lastSearchTick = this.stateTicks;
@@ -778,6 +860,21 @@ public class AutoLadder extends Mod {
                     + " activationHealth=" + this.activationHealth);
             this.enterFail(true);
         }
+    }
+
+    public boolean canHandleFall(EntityPlayerSP player) {
+        if (!this.isEnabled() || player == null || player.isNull()
+                || !this.rescuePriority.getEffectiveValue().booleanValue()) {
+            return false;
+        }
+        if (!this.failTimer.hasTimeElapsed(((Double)this.failDelay.getValue()).longValue())) {
+            return false;
+        }
+        return this.findLadderSlot(player) != -1 && this.shouldActivate(player);
+    }
+
+    public boolean isRescueEngaged() {
+        return this.state == AutoLadderState.SEARCHING_BLOCK || this.isExecutingPlan();
     }
 
     private boolean shouldControlMovement() {
@@ -1254,6 +1351,7 @@ public class AutoLadder extends Mod {
         this.lastActivateResult = false;
         this.lastLandingPredictionTick = -100;
         this.lastSearchTick = -100;
+        this.warmupPending = false;
         this.rejectedPlans.clear();
     }
 

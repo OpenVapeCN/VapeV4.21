@@ -165,6 +165,7 @@ extends Mod {
     private int previousSlot = -1;
     private final BooleanValue onMoreThanXBlocks;
     private final BooleanValue allowStaircaseUp;
+    private final BooleanValue rescuePriority;
 
     private void resetPendingFail() {
         this.pendingFailMessage = null;
@@ -376,6 +377,7 @@ extends Mod {
         this.blacklistBlocks = LimitValue.create(this, "clutch-blacklist", "Block blacklist", LimitValue.BLOCK_LIST_COLOR, ItemLimitData.DEFAULT_BLOCK_BLACKLIST);
         this.heldWhitelist = BooleanValue.create(this, "Held whitelist", false, "Only activates clutch when a whitelisted block is held\nWill only use held block for Clutching");
         this.whitelistBlocks = LimitValue.create(this, "clutch-allowedblocks", "Held block whitelist", LimitValue.ALLOW_LIST_COLOR, new ItemLimitData("blocks"));
+        this.rescuePriority = BooleanValue.create(this, "Rescue priority", true, "Fall rescue priority order: Clutch > AutoLadder > MLG. When enabled, this module participates in the chain and lower-priority modules defer to it");
         this.defaultBlockNames = new ArrayList<String>(Arrays.asList("Wool", "Stone", "Wood Planks", "Red Sandstone", "Stained Clay", "End Stone", "Obsidian"));
         this.rotationClaim = SharedModuleControlClaims.rotation;
         this.movementLock = SharedModuleControlClaims.movementInput;
@@ -394,8 +396,8 @@ extends Mod {
         this.limitBlocks.addDependentValues(this.maxBlocks);
         this.silentAim.getDisabledCondition().applyTo(this.resetAngle);
         this.resetAngle.setOverrideColor(ThemeColors.J.r);
-        this.addValue(this.onVoid, this.onLethalFall, this.onMoreThanXBlocks, this.blocksThreshold, this.speed, this.silentAim, this.resetAngle, this.resetAngleDelay, this.returnToLastSlot, this.returnDelay, this.clutchMoveDelay, this.failDelay, this.allowStaircaseUp, this.showBlockCount, this.limitBlocks, this.maxBlocks, this.blacklist, this.blacklistBlocks, this.heldWhitelist, this.whitelistBlocks);
-        this.rotationClaim.setPriority(this, 50);
+        this.addValue(this.onVoid, this.onLethalFall, this.onMoreThanXBlocks, this.blocksThreshold, this.speed, this.silentAim, this.resetAngle, this.resetAngleDelay, this.returnToLastSlot, this.returnDelay, this.clutchMoveDelay, this.failDelay, this.allowStaircaseUp, this.showBlockCount, this.limitBlocks, this.maxBlocks, this.blacklist, this.blacklistBlocks, this.heldWhitelist, this.whitelistBlocks, this.rescuePriority);
+        this.rotationClaim.setPriority(this, 60);
     }
 
     @EventHandler
@@ -506,6 +508,47 @@ extends Mod {
             score = Integer.MAX_VALUE;
         }
         return (int)score;
+    }
+
+    private boolean isFallTriggered(EntityPlayerSP localPlayer) {
+        if (localPlayer.b$src$Z$fqlxe4() && localPlayer.q() < 0.0) {
+            return false;
+        }
+        if (localPlayer.S$src$Z$151gttj() || localPlayer.f$src$Z$fst3rk() || localPlayer.h$src$Z$ftwoya()) {
+            return false;
+        }
+        if (!(this.onVoid.getEffectiveValue().booleanValue() || this.onLethalFall.getEffectiveValue().booleanValue() || this.onMoreThanXBlocks.getEffectiveValue().booleanValue())) {
+            return false;
+        }
+        BlockCoordinate landingBlock = this.findLandingBlockSimple(50, localPlayer);
+        boolean fallingIntoVoid = false;
+        boolean lethalFall = false;
+        boolean exceedsBlockThreshold = false;
+        if (landingBlock != null) {
+            if (this.onLethalFall.getEffectiveValue().booleanValue() && localPlayer.N() - (double)landingBlock.E() - 3.0 > (double)localPlayer.w$src$F$15l9epb()) {
+                lethalFall = true;
+            }
+            if (this.onMoreThanXBlocks.getEffectiveValue().booleanValue() && localPlayer.N() - (double)(landingBlock.E() + 1) >= (Double)this.blocksThreshold.getValue()) {
+                exceedsBlockThreshold = true;
+            }
+        } else {
+            fallingIntoVoid = this.onVoid.getEffectiveValue();
+        }
+        return fallingIntoVoid || lethalFall || exceedsBlockThreshold;
+    }
+
+    public boolean canHandleFall(EntityPlayerSP localPlayer) {
+        if (!this.isEnabled() || localPlayer == null || localPlayer.isNull() || this.rescuePriority.getEffectiveValue() == false) {
+            return false;
+        }
+        if (this.graph == null || !this.failTimer.hasTimeElapsed(((Double)this.failDelay.getValue()).longValue())) {
+            return false;
+        }
+        return this.findBlockItem(localPlayer) != null && this.isFallTriggered(localPlayer);
+    }
+
+    public boolean isRescueEngaged() {
+        return this.clutchPath != null;
     }
 
     private void planPlacementSearch(BlockPlacementPathSegment pathSegment, EntityPlayerSP localPlayer, World world, ArrayList<Vec3d> candidatePositions) {
@@ -1628,21 +1671,7 @@ extends Mod {
             if (this.isPlayerMoving() && this.clutchPath == null) {
                 boolean fallingOrRising = !localPlayer.b$src$Z$fqlxe4() || localPlayer.q() >= 0.0;
                 if (fallingOrRising && !localPlayer.S$src$Z$151gttj() && !localPlayer.f$src$Z$fst3rk() && !localPlayer.h$src$Z$ftwoya() && this.failTimer.hasTimeElapsed(((Double)this.failDelay.getValue()).longValue())) {
-                    BlockCoordinate landingBlock = this.findLandingBlockSimple(50, localPlayer);
-                    boolean fallingIntoVoid = false;
-                    boolean lethalFall = false;
-                    boolean exceedsBlockThreshold = false;
-                    if (landingBlock != null) {
-                        if (this.onLethalFall.getEffectiveValue().booleanValue() && localPlayer.N() - (double)landingBlock.E() - 3.0 > (double)localPlayer.w$src$F$15l9epb()) {
-                            lethalFall = true;
-                        }
-                        if (this.onMoreThanXBlocks.getEffectiveValue().booleanValue() && localPlayer.N() - (double)(landingBlock.E() + 1) >= (Double)this.blocksThreshold.getValue()) {
-                            exceedsBlockThreshold = true;
-                        }
-                    } else {
-                        fallingIntoVoid = this.onVoid.getEffectiveValue();
-                    }
-                    if (fallingIntoVoid || lethalFall || exceedsBlockThreshold) {
+                    if (this.isFallTriggered(localPlayer)) {
                         if (!this.rotationClaim.isOwnedBy(this) && !this.rotationClaim.acquire(this, this.silentAim.getEffectiveValue())) {
                             return;
                         }
@@ -1809,21 +1838,7 @@ extends Mod {
         if (this.isPlayerMoving() && this.clutchPath == null) {
             boolean fallingOrRising = !localPlayer.b$src$Z$fqlxe4() || localPlayer.q() >= 0.0;
             if (fallingOrRising && !localPlayer.S$src$Z$151gttj() && !localPlayer.f$src$Z$fst3rk() && !localPlayer.h$src$Z$ftwoya() && this.failTimer.hasTimeElapsed(((Double)this.failDelay.getValue()).longValue())) {
-                BlockCoordinate landingBlock = this.findLandingBlockSimple(50, localPlayer);
-                boolean fallingIntoVoid = false;
-                boolean lethalFall = false;
-                boolean exceedsBlockThreshold = false;
-                if (landingBlock != null) {
-                    if (this.onLethalFall.getEffectiveValue().booleanValue() && localPlayer.N() - (double)landingBlock.E() - 3.0 > (double)localPlayer.w$src$F$15l9epb()) {
-                        lethalFall = true;
-                    }
-                    if (this.onMoreThanXBlocks.getEffectiveValue().booleanValue() && localPlayer.N() - (double)(landingBlock.E() + 1) >= (Double)this.blocksThreshold.getValue()) {
-                        exceedsBlockThreshold = true;
-                    }
-                } else {
-                    fallingIntoVoid = this.onVoid.getEffectiveValue();
-                }
-                if (fallingIntoVoid || lethalFall || exceedsBlockThreshold) {
+                if (this.isFallTriggered(localPlayer)) {
                     if (!this.rotationClaim.isOwnedBy(this) && !this.rotationClaim.acquire(this, this.silentAim.getEffectiveValue())) {
                         return;
                     }

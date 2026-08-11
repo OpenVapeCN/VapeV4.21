@@ -23,6 +23,7 @@ import gg.vape.module.blatant.blockin.BlockPlacementGraph;
 import gg.vape.module.blatant.blockin.BlockPlacementUtility;
 import gg.vape.module.blatant.clutch.EntityFixedRotationController;
 import gg.vape.module.control.SharedModuleControlClaims;
+import gg.vape.module.none.ClientSettings;
 import gg.vape.module.utility.clutch.ClutchPlacementPathUtils;
 import gg.vape.module.utility.clutch.PlacementTarget;
 import gg.vape.movement.MovementInputHelper;
@@ -34,6 +35,7 @@ import gg.vape.rotation.FixedRotationController;
 import gg.vape.rotation.RotationAngles;
 import gg.vape.rotation.RotationControlClaim;
 import gg.vape.rotation.RotationManager;
+import gg.vape.ui.click.frame.impl.hud.ActiveModuleStackFrame;
 import gg.vape.ui.theme.ThemeColors;
 import gg.vape.unmap.ItemLimitData;
 import gg.vape.utils.BlockUtil;
@@ -77,24 +79,24 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 
 public class AutoLadder extends Mod {
     private static final float UNSET_ANGLE = -999.0f;
     private static final int PLACEMENT_RETRY_INTERVAL = 2;
     private static final int SAFE_HOLD_TICKS = 2;
+    private static final float FIXED_SPEED = 10.0f;
+    private static final double DEFAULT_RESET_ANGLE_DELAY_MIN_TICKS = 3.0;
+    private static final double DEFAULT_RESET_ANGLE_DELAY_MAX_TICKS = 6.0;
 
     private final BooleanValue onLethalFall;
     private final BooleanValue onMoreThanXBlocks;
     private final NumberValue blocksThreshold;
-    private final BooleanValue placeSupportBlock;
-    private final BooleanValue catchMovement;
-    private final NumberValue speed;
     private final BooleanValue silentAim;
     private final NumberValue failDelay;
     private final BooleanValue returnToLastSlot;
     private final RandomValue returnDelay;
     private final BooleanValue resetAngle;
-    private final RandomValue resetAngleDelay;
     private final BooleanValue showLadderCount;
     private final BooleanValue blacklist;
     private final LimitValue blacklistBlocks;
@@ -147,12 +149,6 @@ public class AutoLadder extends Mod {
                 "Activate when the predicted total fall exceeds the configured height");
         this.blocksThreshold = NumberValue.create(
                 this, "Blocks", "#", "", 3.0, 6.0, 10.0, 1.0);
-        this.placeSupportBlock = BooleanValue.create(this, "Place support block", true,
-                "Place one stable block when no catchable existing face is available");
-        this.catchMovement = BooleanValue.create(this, "Catch movement", true,
-                "Fine-tunes the fall and centers the player in the ladder block after placement");
-        this.speed = NumberValue.create(this, "Speed", "#.#", "", 1.0, 3.5, 10.0, 0.1,
-                "Maximum flick speed while placing the support and ladder");
         this.silentAim = BooleanValue.create(this, "Silent aim", false,
                 "Uses server-side aim while placing");
         this.failDelay = NumberValue.create(this, "Fail delay", "#", "ms",
@@ -165,18 +161,20 @@ public class AutoLadder extends Mod {
                 "Delay before returning to the previous slot");
         this.resetAngle = BooleanValue.create(this, "Reset angle", true,
                 "Returns to the original view angle after non-silent placement");
-        this.resetAngleDelay = RandomValue.createWithDescription(this, "Reset angle delay", "#", "tick",
-                0.0, 3.0, 6.0, 10.0, 1.0,
-                "Delay before returning to the original view angle");
-        this.showLadderCount = BooleanValue.create(this, "Show ladder count", false);
+        this.showLadderCount = BooleanValue.create(this, "Show ladder count", false,
+                "Renders your ladder count on the center of your screen");
         this.blacklist = BooleanValue.create(this, "Blacklist", true,
                 "Do not use blacklisted blocks as the ladder support");
+        List<ItemLimitData> defaultBlacklist = new ArrayList<>(
+                ItemLimitData.DEFAULT_BLOCK_BLACKLIST);
+        defaultBlacklist.add(new ItemLimitData("Obsidian"));
         this.blacklistBlocks = LimitValue.create(this, "autoladder-blacklist", "Block blacklist",
-                LimitValue.BLOCK_LIST_COLOR, ItemLimitData.DEFAULT_BLOCK_BLACKLIST);
+                LimitValue.BLOCK_LIST_COLOR, defaultBlacklist);
         this.heldWhitelist = BooleanValue.create(this, "Held whitelist", false,
                 "Only use the currently held whitelisted block as support");
         this.whitelistBlocks = LimitValue.create(this, "autoladder-allowedblocks",
-                "Held block whitelist", LimitValue.ALLOW_LIST_COLOR, new ItemLimitData("blocks"));
+                "Held block whitelist", LimitValue.ALLOW_LIST_COLOR,
+                Arrays.asList(new ItemLimitData("blocks"), new ItemLimitData("Ladder")));
         this.rotationClaim = SharedModuleControlClaims.rotation;
         this.failTimer = new TimerUtil();
         this.rejectedPlans = new HashSet<>();
@@ -189,11 +187,9 @@ public class AutoLadder extends Mod {
         this.blacklist.addDependentValues(this.blacklistBlocks);
         this.heldWhitelist.addDependentValues(this.whitelistBlocks);
         this.silentAim.getDisabledCondition().applyTo(this.resetAngle);
-        this.resetAngle.addDependentValues(this.resetAngleDelay);
         this.resetAngle.setOverrideColor(ThemeColors.J.r);
         this.addValue(this.onLethalFall, this.onMoreThanXBlocks, this.blocksThreshold,
-                this.placeSupportBlock, this.catchMovement, this.speed, this.silentAim,
-                this.resetAngle, this.resetAngleDelay, this.returnToLastSlot, this.returnDelay,
+                this.silentAim, this.resetAngle, this.returnToLastSlot, this.returnDelay,
                 this.failDelay, this.showLadderCount, this.blacklist, this.blacklistBlocks,
                 this.heldWhitelist, this.whitelistBlocks);
         this.rotationClaim.setPriority(this, 60);
@@ -202,28 +198,33 @@ public class AutoLadder extends Mod {
     @Override
     public void onEnable() {
         this.resetImmediately();
+        ClientSettings.getFrame(ActiveModuleStackFrame.class).addModule(this);
         this.audit("enabled lethal=" + this.onLethalFall.getEffectiveValue()
                 + " threshold=" + this.onMoreThanXBlocks.getEffectiveValue()
                 + " blocks=" + this.blocksThreshold.getValue()
-                + " support=" + this.placeSupportBlock.getEffectiveValue()
-                + " movement=" + this.catchMovement.getEffectiveValue());
+                + " support=true movement=true speed=" + FIXED_SPEED);
     }
 
     @Override
     public void onDisable() {
+        ClientSettings.getFrame(ActiveModuleStackFrame.class).removeModule(this);
         this.resetImmediately();
     }
 
     @Override
     public ModuleDisplayInfo getModuleDisplayInfo() {
-        if (!this.showLadderCount.getEffectiveValue().booleanValue()) {
+        if (!this.showLadderCount.getEffectiveValue().booleanValue()
+                || Minecraft.thePlayer().isNull()) {
             return null;
         }
         int count = this.countLadders();
-        Color color = count >= 16 ? new Color(2, 190, 58)
-                : (count > 0 ? new Color(255, 249, 18) : new Color(255, 20, 20));
-        return new ModuleDisplayInfo(String.valueOf(count), color,
-                " \u00a77(" + this.state.name() + ")");
+        Color color = new Color(255, 20, 20);
+        if (count >= 32) {
+            color = new Color(2, 190, 58);
+        } else if (count >= 16) {
+            color = new Color(255, 249, 18);
+        }
+        return new ModuleDisplayInfo(String.valueOf(count), color);
     }
 
     @EventHandler(priority = EventPriority.LOWEREST)
@@ -277,8 +278,7 @@ public class AutoLadder extends Mod {
             }
             return;
         }
-        if (this.catchMovement.getEffectiveValue().booleanValue()
-                && SharedModuleControlClaims.movementInput.isLocked()
+        if (SharedModuleControlClaims.movementInput.isLocked()
                 && this.shouldControlMovement()) {
             this.enterFail(true);
             return;
@@ -404,8 +404,7 @@ public class AutoLadder extends Mod {
                 && !player.isNull() && this.isLadder(player.getWorld(), this.plan.getLadderBlock())) {
             this.confirmLadder(player.getWorld(), "pre-local");
         }
-        if (!this.catchMovement.getEffectiveValue().booleanValue()
-                || Minecraft.currentScreen().isNotNull() || player.isNull()) {
+        if (Minecraft.currentScreen().isNotNull() || player.isNull()) {
             this.fallAdjustmentPending = false;
             this.restoreMovementInput();
             return;
@@ -551,11 +550,10 @@ public class AutoLadder extends Mod {
         }
         this.ladderSlot = this.findLadderSlot(player);
         this.supportSlot = this.findSupportSlot(player);
-        boolean movementAvailable = this.catchMovement.getEffectiveValue().booleanValue()
-                && !SharedModuleControlClaims.movementInput.isLocked();
+        boolean movementAvailable = !SharedModuleControlClaims.movementInput.isLocked();
         AutoLadderPlanner planner = new AutoLadderPlanner(world, player,
                 this.ladderSlot != -1, this.supportSlot != -1,
-                this.placeSupportBlock.getEffectiveValue().booleanValue(),
+                true,
                 movementAvailable, this.rejectedPlans, this.landingBlock);
         this.audit("search start pos=" + this.playerPosition(player)
                 + " motionY=" + player.q() + " fallDistance=" + player.getFallDistance()
@@ -850,8 +848,7 @@ public class AutoLadder extends Mod {
         float yawDistance = Math.abs(MathUtil.wrapAngleTo180(targetRotation.getYaw() - currentYaw));
         float pitchDistance = Math.abs(targetRotation.getPitch() - currentPitch);
         float requestedSpeed = (yawDistance + pitchDistance) / 1.8f / Math.max(ticksAvailable, 1);
-        float maximumSpeed = 15.0f
-                + 85.0f * (((Double)this.speed.getValue()).floatValue() / 10.0f);
+        float maximumSpeed = 15.0f + 85.0f * (FIXED_SPEED / 10.0f);
         controller.setRestoreCapturedRotation(true);
         controller.setSpeed(Math.min(maximumSpeed, requestedSpeed));
         controller.setTolerance(0.0f);
@@ -1067,7 +1064,7 @@ public class AutoLadder extends Mod {
                 this.resetAngleDelayTicks = -1;
                 this.releaseRotationImmediately();
             } else {
-                this.resetAngleDelayTicks = (int)Math.round(this.resetAngleDelay.getRandomValue());
+                this.resetAngleDelayTicks = this.sampleDefaultResetAngleDelayTicks();
             }
             if (!this.returnToLastSlot.getEffectiveValue().booleanValue()) {
                 this.previousSlot = -1;
@@ -1076,6 +1073,13 @@ public class AutoLadder extends Mod {
             this.restoreSlotImmediately();
             this.releaseRotationImmediately();
         }
+    }
+
+    private int sampleDefaultResetAngleDelayTicks() {
+        double delay = ThreadLocalRandom.current().nextDouble(
+                DEFAULT_RESET_ANGLE_DELAY_MIN_TICKS,
+                DEFAULT_RESET_ANGLE_DELAY_MAX_TICKS);
+        return (int)Math.round(delay);
     }
 
     private void tickPostRun(EntityPlayerSP player, GuiScreen screen) {
@@ -1165,7 +1169,7 @@ public class AutoLadder extends Mod {
                 || !(this.rotationController instanceof AdaptiveRotationController)) {
             return;
         }
-        this.audit("releasing silent placement rotation before catch movement");
+        this.audit("releasing silent placement rotation before centering");
         this.releaseRotationImmediately();
         this.resetAngleDelayTicks = -1;
     }

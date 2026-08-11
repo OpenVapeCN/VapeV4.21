@@ -8,6 +8,7 @@ public class PlacementTarget {
     private BlockData cachedBlockData;
     public int depth;
     public Vec3 hitPoint;
+    public boolean ladderPlacement;
     public final BlockData supportBlock;
     public final EnumFacing facing;
     public final boolean offsetFromSupport;

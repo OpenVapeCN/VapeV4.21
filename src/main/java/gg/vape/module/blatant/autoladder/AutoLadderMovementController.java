@@ -14,7 +14,7 @@ import gg.vape.wrapper.impl.GameSettings;
 import gg.vape.wrapper.impl.Minecraft;
 import gg.vape.wrapper.impl.World;
 
-/** Receding-horizon movement controller used while creating and catching the ladder. */
+/** Receding-horizon movement controller for fall centering and ladder capture. */
 public final class AutoLadderMovementController {
     private static final double LEGACY_LADDER_THICKNESS = 0.125;
     private static final double MODERN_LADDER_THICKNESS = 0.1875;
@@ -34,7 +34,7 @@ public final class AutoLadderMovementController {
     }
 
     public static CatchInput choose(EntityPlayerSP player, World world, AutoLadderPlan plan) {
-        if (isSecureCatch(player, world, plan)) {
+        if (isLadderCapture(player)) {
             return INPUTS[0];
         }
         int horizon = estimateCatchHorizon(player, plan);
@@ -68,7 +68,7 @@ public final class AutoLadderMovementController {
             int playerBlockY = (int)Math.floor(simulatedPlayer.N() + 1.0E-4);
             int ladderY = plan.getLadderBlock().B();
             double verticalMiss = playerBlockY == ladderY ? 0.0 : Math.abs(playerBlockY - ladderY);
-            if (isSecureCatch(simulatedPlayer, world, plan)) {
+            if (isLadderCapture(simulatedPlayer)) {
                 if (firstSecureCatchTick == -1) {
                     firstSecureCatchTick = tick;
                 }
@@ -100,8 +100,8 @@ public final class AutoLadderMovementController {
         return bestInterceptScore + horizontalDistanceSq * 200.0 + overshootPenalty;
     }
 
-    private static boolean isSecureCatch(EntityPlayer player, World world, AutoLadderPlan plan) {
-        return player.boolean_S() && isCatchableNow(player, world, plan);
+    private static boolean isLadderCapture(EntityPlayer player) {
+        return player.boolean_S();
     }
 
     private static int estimateCatchHorizon(EntityPlayerSP player, AutoLadderPlan plan) {
@@ -193,6 +193,20 @@ public final class AutoLadderMovementController {
                 settings.d$src$Lgg_vape_wrapper_impl_KeyBinding_$adn2z0(), false);
     }
 
+    public static void apply(AutoLadderFallAdjustment adjustment) {
+        if (!adjustment.overridesInput()) {
+            MovementInputHelper.restorePhysicalInput(false);
+            return;
+        }
+        MovementInputHelper.synchronizeDirectionalInput(
+                adjustment.isForward(), adjustment.isBackward(),
+                adjustment.isLeft(), adjustment.isRight());
+        MovementInputHelper.setJumpPressed(false);
+        GameSettings settings = Minecraft.gameSettings();
+        MovementInputHelper.synchronizeKeyState(
+                settings.d$src$Lgg_vape_wrapper_impl_KeyBinding_$adn2z0(), false);
+    }
+
     public static final class CatchInput {
         private final boolean forward;
         private final boolean backward;
@@ -210,5 +224,7 @@ public final class AutoLadderMovementController {
             return "F=" + this.forward + ",B=" + this.backward
                     + ",L=" + this.left + ",R=" + this.right;
         }
+
     }
+
 }

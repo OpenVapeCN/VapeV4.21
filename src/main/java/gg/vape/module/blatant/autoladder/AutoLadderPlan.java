@@ -22,11 +22,13 @@ public final class AutoLadderPlan {
     private final int blockPlacementTick;
     private final int ladderPlacementTick;
     private final double score;
+    private final AutoLadderFallAdjustment fallAdjustment;
 
     public AutoLadderPlan(Mode mode, @Nullable PlacementTarget blockTarget,
                           PlacementTarget ladderTarget, double catchX, double catchZ,
                           int catchTick, int blockPlacementTick,
-                          int ladderPlacementTick, double score) {
+                          int ladderPlacementTick, double score,
+                          AutoLadderFallAdjustment fallAdjustment) {
         this.mode = mode;
         this.blockTarget = blockTarget;
         this.ladderTarget = ladderTarget;
@@ -36,6 +38,7 @@ public final class AutoLadderPlan {
         this.blockPlacementTick = blockPlacementTick;
         this.ladderPlacementTick = ladderPlacementTick;
         this.score = score;
+        this.fallAdjustment = fallAdjustment;
     }
 
     public Mode getMode() {
@@ -87,6 +90,10 @@ public final class AutoLadderPlan {
         return this.score;
     }
 
+    public AutoLadderFallAdjustment getFallAdjustment() {
+        return this.fallAdjustment;
+    }
+
     public String describe() {
         BlockData ladder = this.getLadderBlock();
         StringBuilder description = new StringBuilder(this.mode.name())
@@ -99,6 +106,7 @@ public final class AutoLadderPlan {
                 .append(" catchEta=").append(this.catchTick)
                 .append(" blockReach=").append(this.blockPlacementTick)
                 .append(" ladderReach=").append(this.ladderPlacementTick)
+                .append(" fallInput=").append(this.fallAdjustment.describe())
                 .append(" score=").append(Math.round(this.score * 10.0) / 10.0);
         if (this.blockTarget != null) {
             description.append(" anchor=").append(this.blockTarget.supportBlock)

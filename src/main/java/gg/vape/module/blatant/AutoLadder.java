@@ -13,6 +13,7 @@ import gg.vape.mapping.MappedClasses;
 import gg.vape.module.Category;
 import gg.vape.module.Mod;
 import gg.vape.module.ModuleDisplayInfo;
+import gg.vape.module.blatant.autoladder.AutoLadderFallAdjustment;
 import gg.vape.module.blatant.autoladder.AutoLadderMovementController;
 import gg.vape.module.blatant.autoladder.AutoLadderPlan;
 import gg.vape.module.blatant.autoladder.AutoLadderPlanner;
@@ -109,6 +110,9 @@ public class AutoLadder extends Mod {
     private AutoLadderPlan plan;
     private FixedRotationController rotationController;
     private BlockCoordinate landingBlock;
+    private AutoLadderFallAdjustment pendingFallAdjustment =
+            AutoLadderFallAdjustment.PHYSICAL;
+    private double pendingFallCenterError = Double.POSITIVE_INFINITY;
     private int stateTicks;
     private int ladderSlot = -1;
     private int supportSlot = -1;
@@ -132,6 +136,7 @@ public class AutoLadder extends Mod {
     private boolean fallEpisodeResolved;
     private boolean supportPlacementRequested;
     private boolean supportConfirmed;
+    private boolean fallAdjustmentPending;
 
     public AutoLadder() {
         super("AutoLadder", 7043655, Category.UTILITY,
@@ -145,7 +150,7 @@ public class AutoLadder extends Mod {
         this.placeSupportBlock = BooleanValue.create(this, "Place support block", true,
                 "Place one stable block when no catchable existing face is available");
         this.catchMovement = BooleanValue.create(this, "Catch movement", true,
-                "Controls movement while approaching the ladder");
+                "Fine-tunes the fall and controls movement while approaching the ladder");
         this.speed = NumberValue.create(this, "Speed", "#.#", "", 1.0, 3.5, 10.0, 0.1,
                 "Maximum flick speed while placing the support and ladder");
         this.silentAim = BooleanValue.create(this, "Silent aim", false,
@@ -395,9 +400,32 @@ public class AutoLadder extends Mod {
     @EventHandler(priority = EventPriority.LOWEST)
     public void onPreLocalPlayerTick(EventPreLocalPlayerTick event) {
         EntityPlayerSP player = event.getThePlayer();
-        if (!this.catchMovement.getEffectiveValue().booleanValue() || this.plan == null
-                || Minecraft.currentScreen().isNotNull() || player.isNull()
-                || !this.shouldControlMovement()) {
+        if (this.state == AutoLadderState.PLACING_LADDER && this.plan != null
+                && !player.isNull() && this.isLadder(player.getWorld(), this.plan.getLadderBlock())) {
+            this.confirmLadder(player.getWorld(), "pre-local");
+        }
+        if (!this.catchMovement.getEffectiveValue().booleanValue()
+                || Minecraft.currentScreen().isNotNull() || player.isNull()) {
+            this.fallAdjustmentPending = false;
+            this.restoreMovementInput();
+            return;
+        }
+        if (this.fallAdjustmentPending && this.state != AutoLadderState.CATCHING_LADDER) {
+            AutoLadderFallAdjustment adjustment = this.pendingFallAdjustment;
+            this.fallAdjustmentPending = false;
+            this.audit("joint-fall input " + adjustment.describe()
+                    + " state=" + this.state + " landing=" + this.landingBlock
+                    + " centerError=" + this.roundDistance(this.pendingFallCenterError)
+                    + " plan=" + (this.plan == null ? "none" : this.plan.getMode()));
+            AutoLadderMovementController.apply(adjustment);
+            this.movementControlled = adjustment.overridesInput();
+            return;
+        }
+        if (this.state == AutoLadderState.CATCHING_LADDER) {
+            this.fallAdjustmentPending = false;
+        }
+        if (this.plan == null || !this.shouldControlMovement()) {
+            this.restoreMovementInput();
             return;
         }
         AutoLadderMovementController.CatchInput input = AutoLadderMovementController.choose(
@@ -406,7 +434,9 @@ public class AutoLadder extends Mod {
                 + " onLadder=" + player.boolean_S()
                 + " catchable=" + AutoLadderMovementController.isCatchableNow(
                 player, player.getWorld(), this.plan)
-                + " target=" + this.plan.getLadderBlock());
+                + " target=" + this.plan.getLadderBlock()
+                + " catchPos=[" + this.roundDistance(this.plan.getCatchX())
+                + ',' + this.roundDistance(this.plan.getCatchZ()) + ']');
         AutoLadderMovementController.apply(input);
         this.movementControlled = true;
     }
@@ -507,6 +537,7 @@ public class AutoLadder extends Mod {
     }
 
     private void searchForPlan(EntityPlayerSP player, World world) {
+        this.restoreMovementInput();
         if (!this.shouldActivate(player)) {
             this.transition(AutoLadderState.FALLING);
             return;
@@ -532,6 +563,8 @@ public class AutoLadder extends Mod {
             return;
         }
         this.audit("planner " + planner.getAuditSummary());
+        this.queueFallAdjustment(planner.getRecommendedFallAdjustment(),
+                planner.getRecommendedCenterError());
         if (candidate == null) {
             boolean landingTooClose = this.isLandingTooClose(player);
             this.audit("search result=none landingTooClose=" + landingTooClose);
@@ -550,6 +583,8 @@ public class AutoLadder extends Mod {
             this.captureOriginalRotation(player);
         }
         this.plan = candidate;
+        this.queueFallAdjustment(candidate.getFallAdjustment(),
+                planner.getRecommendedCenterError());
         this.audit("plan accepted " + candidate.describe());
         this.referenceYaw = player.J();
         this.supportPlacementRequested = false;
@@ -657,10 +692,22 @@ public class AutoLadder extends Mod {
     private void handleGroundedPlayer(EntityPlayerSP player) {
         if (this.state != AutoLadderState.IDLE) {
             this.audit("grounded state=" + this.state + " health=" + this.effectiveHealth(player)
-                    + " activationHealth=" + this.activationHealth);
+                    + " activationHealth=" + this.activationHealth
+                    + " fallDistance=" + player.getFallDistance()
+                    + " onLadder=" + player.boolean_S());
         }
         this.rejectedPlans.clear();
         this.fallEpisodeResolved = false;
+        if (this.state == AutoLadderState.CATCHING_LADDER && this.plan != null
+                && this.isLadder(player.getWorld(), this.plan.getLadderBlock())
+                && player.boolean_S() && player.getFallDistance() <= 0.5f) {
+            this.audit("grounded ladder capture confirmed catchable="
+                    + AutoLadderMovementController.isCatchableNow(
+                    player, player.getWorld(), this.plan));
+            this.transition(AutoLadderState.SAFE);
+            this.completeSafeRun();
+            return;
+        }
         if (this.state == AutoLadderState.IDLE || this.state == AutoLadderState.FALLING) {
             this.transition(AutoLadderState.IDLE);
             return;
@@ -683,6 +730,12 @@ public class AutoLadder extends Mod {
 
     private boolean shouldControlMovement() {
         return this.state == AutoLadderState.CATCHING_LADDER;
+    }
+
+    private void queueFallAdjustment(AutoLadderFallAdjustment adjustment, double centerError) {
+        this.pendingFallAdjustment = adjustment;
+        this.pendingFallCenterError = centerError;
+        this.fallAdjustmentPending = true;
     }
 
     private boolean isExecutingPlan() {
@@ -992,6 +1045,9 @@ public class AutoLadder extends Mod {
 
     private void releaseRunControls(boolean scheduleRestore) {
         this.plan = null;
+        this.pendingFallAdjustment = AutoLadderFallAdjustment.PHYSICAL;
+        this.pendingFallCenterError = Double.POSITIVE_INFINITY;
+        this.fallAdjustmentPending = false;
         this.supportPlacementRequested = false;
         this.supportConfirmed = false;
         this.releasePlacementButtons();
@@ -1306,6 +1362,10 @@ public class AutoLadder extends Mod {
         return '[' + String.valueOf(Math.round(player.z() * 100.0) / 100.0)
                 + ", " + Math.round(player.N() * 100.0) / 100.0
                 + ", " + Math.round(player.h() * 100.0) / 100.0 + ']';
+    }
+
+    private double roundDistance(double value) {
+        return Math.round(value * 100.0) / 100.0;
     }
 
     private String describeTarget(PlacementTarget target) {

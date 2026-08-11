@@ -17,6 +17,7 @@ import gg.vape.wrapper.impl.World;
 public final class AutoLadderMovementController {
     private static final double LEGACY_LADDER_THICKNESS = 0.125;
     private static final double MODERN_LADDER_THICKNESS = 0.1875;
+    private static final int CENTERING_LOOKAHEAD_TICKS = 2;
     private static final CenterInput[] INPUTS = new CenterInput[]{
             new CenterInput(false, false, false, false),
             new CenterInput(true, false, false, false),
@@ -34,12 +35,18 @@ public final class AutoLadderMovementController {
 
     public static CenterInput chooseCentering(EntityPlayerSP player, World world,
                                               double centerX, double centerZ) {
-        BlockPlacementGraph graph = new BlockPlacementGraph(player);
+        return chooseCentering(player, player, world,
+                new BlockPlacementGraph(player), centerX, centerZ);
+    }
+
+    public static CenterInput chooseCentering(EntityPlayer sourcePlayer, EntityPlayerSP localPlayer,
+                                              World world, BlockPlacementGraph graph,
+                                              double centerX, double centerZ) {
         CenterInput bestInput = INPUTS[0];
         double bestScore = Double.POSITIVE_INFINITY;
         for (CenterInput input : INPUTS) {
             double score = simulateCenteringInput(
-                    player, world, graph, input, centerX, centerZ);
+                    sourcePlayer, localPlayer, world, graph, input, centerX, centerZ);
             if (score < bestScore) {
                 bestScore = score;
                 bestInput = input;
@@ -48,16 +55,17 @@ public final class AutoLadderMovementController {
         return bestInput;
     }
 
-    private static double simulateCenteringInput(EntityPlayerSP player, World world,
-                                                 BlockPlacementGraph graph,
+    private static double simulateCenteringInput(EntityPlayer sourcePlayer,
+                                                 EntityPlayerSP localPlayer,
+                                                 World world, BlockPlacementGraph graph,
                                                  CenterInput input,
                                                  double centerX, double centerZ) {
-        BlockPathPlanner simulation = new BlockPathPlanner(player, player, world, graph);
+        BlockPathPlanner simulation = new BlockPathPlanner(sourcePlayer, localPlayer, world, graph);
         simulation.applySnapshot(graph);
         simulation.setInput(input.forward, input.backward, input.left, input.right, false, false);
         EntityPlayer simulatedPlayer = simulation.getSimulatedPlayer();
         double bestDistanceSq = Double.POSITIVE_INFINITY;
-        for (int tick = 1; tick <= 2; ++tick) {
+        for (int tick = 1; tick <= CENTERING_LOOKAHEAD_TICKS; ++tick) {
             simulation.simulateTick(false);
             double deltaX = centerX - simulatedPlayer.z();
             double deltaZ = centerZ - simulatedPlayer.h();
@@ -103,12 +111,7 @@ public final class AutoLadderMovementController {
     }
 
     public static void apply(CenterInput input) {
-        MovementInputHelper.synchronizeDirectionalInput(
-                input.forward, input.backward, input.left, input.right);
-        MovementInputHelper.setJumpPressed(false);
-        GameSettings settings = Minecraft.gameSettings();
-        MovementInputHelper.synchronizeKeyState(
-                settings.d$src$Lgg_vape_wrapper_impl_KeyBinding_$adn2z0(), false);
+        applyDirectional(input.forward, input.backward, input.left, input.right);
     }
 
     public static void apply(AutoLadderFallAdjustment adjustment) {
@@ -116,9 +119,13 @@ public final class AutoLadderMovementController {
             MovementInputHelper.restorePhysicalInput(false);
             return;
         }
-        MovementInputHelper.synchronizeDirectionalInput(
-                adjustment.isForward(), adjustment.isBackward(),
+        applyDirectional(adjustment.isForward(), adjustment.isBackward(),
                 adjustment.isLeft(), adjustment.isRight());
+    }
+
+    private static void applyDirectional(boolean forward, boolean backward,
+                                         boolean left, boolean right) {
+        MovementInputHelper.synchronizeDirectionalInput(forward, backward, left, right);
         MovementInputHelper.setJumpPressed(false);
         GameSettings settings = Minecraft.gameSettings();
         MovementInputHelper.synchronizeKeyState(
@@ -138,6 +145,21 @@ public final class AutoLadderMovementController {
             this.right = right;
         }
 
+        public boolean isForward() {
+            return this.forward;
+        }
+
+        public boolean isBackward() {
+            return this.backward;
+        }
+
+        public boolean isLeft() {
+            return this.left;
+        }
+
+        public boolean isRight() {
+            return this.right;
+        }
     }
 
 }

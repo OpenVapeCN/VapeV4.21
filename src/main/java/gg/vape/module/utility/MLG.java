@@ -15,6 +15,7 @@ import gg.vape.module.blatant.blockin.HotbarSlotResolution;
 import gg.vape.module.blatant.blockin.HotbarSlotResolutionWithValue;
 import gg.vape.module.control.FallRescuePriorityManager;
 import gg.vape.module.control.SharedModuleControlClaims;
+import gg.vape.module.utility.RescueModuleUtil;
 import gg.vape.module.utility.inventory.ItemStackActionPredicate;
 import gg.vape.module.utility.mlg.MLGPlacementController;
 import gg.vape.rotation.AdaptiveRotationController;
@@ -143,7 +144,7 @@ extends Mod {
         this.checkInventory = BooleanValue.create(this, "Check inventory", true, "Retrieves MLG Item to use from Inventory if not in Hotbar");
         this.nonRemovableItems = LimitValue.create(this, "mlg-whitelisteditems", "Non-removable Items", LimitValue.ALLOW_LIST_COLOR, Arrays.asList(new ItemLimitData("Water Bucket"), new ItemLimitData("Bucket"), new ItemLimitData("Cobweb")));
         this.healthValue = NumberValue.create(this, "Health", "#", "", 1.0, 5.0, 20.0, 1.0, "Min amount of fall damage for activation");
-        this.rescuePriority = BooleanValue.create(this, "Rescue priority", true, "Fall rescue priority order: Clutch > AutoLadder > MLG. When enabled, only acts when higher-priority rescue modules are unavailable or have failed");
+        this.rescuePriority = BooleanValue.create(this, "Rescue priority", true, RescueModuleUtil.RESCUE_PRIORITY_DESCRIPTION);
         this.state = MLGState.IDLE;
         this.useBuckets.addDependentValues(this.pickUpWater);
         this.onXDamage.addDependentValues(this.healthValue);

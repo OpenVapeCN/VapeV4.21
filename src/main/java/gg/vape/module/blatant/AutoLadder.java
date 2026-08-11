@@ -25,12 +25,11 @@ import gg.vape.module.blatant.clutch.EntityFixedRotationController;
 import gg.vape.module.control.FallRescuePriorityManager;
 import gg.vape.module.control.SharedModuleControlClaims;
 import gg.vape.module.none.ClientSettings;
+import gg.vape.module.utility.RescueModuleUtil;
 import gg.vape.module.utility.clutch.ClutchPlacementPathUtils;
 import gg.vape.module.utility.clutch.PlacementTarget;
 import gg.vape.movement.MovementInputHelper;
 import gg.vape.notification.Notification;
-import gg.vape.notification.NotificationType;
-import gg.vape.notification.TextNotificationContent;
 import gg.vape.rotation.AdaptiveRotationController;
 import gg.vape.rotation.FixedRotationController;
 import gg.vape.rotation.RotationAngles;
@@ -188,13 +187,11 @@ public class AutoLadder extends Mod {
                 "Held block whitelist", LimitValue.ALLOW_LIST_COLOR,
                 Arrays.asList(new ItemLimitData("blocks"), new ItemLimitData("Ladder")));
         this.rescuePriority = BooleanValue.create(this, "Rescue priority", true,
-                "Fall rescue priority order: Clutch > AutoLadder > MLG. When enabled, only acts when higher-priority rescue modules are unavailable or have failed");
+                RescueModuleUtil.RESCUE_PRIORITY_DESCRIPTION);
         this.rotationClaim = SharedModuleControlClaims.rotation;
         this.failTimer = new TimerUtil();
         this.rejectedPlans = new HashSet<>();
-        this.preferredBlockNames = new ArrayList<>(Arrays.asList(
-                "Wool", "Stone", "Wood Planks", "Red Sandstone",
-                "Stained Clay", "End Stone", "Obsidian"));
+        this.preferredBlockNames = RescueModuleUtil.PREFERRED_BLOCK_NAMES;
 
         this.onMoreThanXBlocks.addDependentValues(this.blocksThreshold);
         this.returnToLastSlot.addDependentValues(this.returnDelay);
@@ -231,12 +228,7 @@ public class AutoLadder extends Mod {
             return null;
         }
         int count = this.countLadders();
-        Color color = new Color(255, 20, 20);
-        if (count >= 32) {
-            color = new Color(2, 190, 58);
-        } else if (count >= 16) {
-            color = new Color(255, 249, 18);
-        }
+        Color color = RescueModuleUtil.countColor(count);
         return new ModuleDisplayInfo(String.valueOf(count), color);
     }
 
@@ -1210,21 +1202,8 @@ public class AutoLadder extends Mod {
     }
 
     private void showFailNotification(String message, boolean forceUpdate) {
-        boolean shouldEnqueue = false;
-        boolean expired = this.failNotification != null && this.failNotification.isExpired();
-        if (this.failNotification == null) {
-            this.failNotification = new Notification(NotificationType.ALERT, "AutoLadder Failed",
-                    new TextNotificationContent(message), 0.0, 0.0, 3500L);
-            shouldEnqueue = true;
-        } else if (expired || forceUpdate) {
-            shouldEnqueue = expired;
-            TextNotificationContent content = (TextNotificationContent)this.failNotification.getContent();
-            content.setText(message);
-            this.failNotification.setDuration(3500L);
-        }
-        if (shouldEnqueue) {
-            Vape.INSTANCE.getNotificationManager().enqueue(this.failNotification, false);
-        }
+        this.failNotification = RescueModuleUtil.updateFailNotification(
+                this.failNotification, "AutoLadder Failed", message, forceUpdate);
     }
 
     private void resetImmediately() {
@@ -1327,14 +1306,8 @@ public class AutoLadder extends Mod {
                 validSlots.add(slot);
             }
         }
-        for (String preferredName : this.preferredBlockNames) {
-            for (Integer slot : validSlots) {
-                if (inventory.c(slot.intValue()).x().contains(preferredName)) {
-                    return slot.intValue();
-                }
-            }
-        }
-        return validSlots.isEmpty() ? -1 : validSlots.get(0).intValue();
+        return RescueModuleUtil.findPreferredSlot(
+                inventory, validSlots, this.preferredBlockNames);
     }
 
     private boolean isLadderStack(ItemStack stack) {

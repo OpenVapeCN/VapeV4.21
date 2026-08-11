@@ -32,12 +32,11 @@ import gg.vape.module.blatant.clutch.EntityFixedRotationController;
 import gg.vape.module.control.SharedModuleControlClaims;
 import gg.vape.module.none.ClientSettings;
 import gg.vape.module.render.hud.FreeLookHudModule;
+import gg.vape.module.utility.RescueModuleUtil;
 import gg.vape.module.utility.clutch.ClutchPlacementPathUtils;
 import gg.vape.module.utility.clutch.PlacementTarget;
 import gg.vape.movement.MovementInputHelper;
 import gg.vape.notification.Notification;
-import gg.vape.notification.NotificationType;
-import gg.vape.notification.TextNotificationContent;
 import gg.vape.rotation.AdaptiveRotationController;
 import gg.vape.rotation.FixedRotationController;
 import gg.vape.rotation.RotationAngles;
@@ -86,7 +85,6 @@ import gg.vape.wrapper.impl.World;
 import gg.vape.wrapper.impl.WorldClient;
 import java.awt.Color;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -389,7 +387,7 @@ extends Mod {
         this.whitelistBlocks = LimitValue.create(this, "clutch-allowedblocks", "Held block whitelist", LimitValue.ALLOW_LIST_COLOR, new ItemLimitData("blocks"));
         this.rescuePriority = BooleanValue.create(this, "Rescue priority", true, "Fall rescue priority order: Clutch > AutoLadder > MLG. When enabled, this module participates in the chain and lower-priority modules defer to it");
         this.autoLadder = BooleanValue.create(this, "Auto ladder", true, "When the platform would be unreachable in time, quickly extends blocks and places a ladder to catch the fall");
-        this.defaultBlockNames = new ArrayList<String>(Arrays.asList("Wool", "Stone", "Wood Planks", "Red Sandstone", "Stained Clay", "End Stone", "Obsidian"));
+        this.defaultBlockNames = new ArrayList<String>(RescueModuleUtil.PREFERRED_BLOCK_NAMES);
         this.rotationClaim = SharedModuleControlClaims.rotation;
         this.movementLock = SharedModuleControlClaims.movementInput;
         this.landTimer = new TimerUtil();
@@ -640,12 +638,7 @@ extends Mod {
             return null;
         }
         int blockCount = this.clutchPath == null ? this.countBlocks() : this.clutchPath.getPendingPlacementCount();
-        Color countColor = new Color(255, 20, 20);
-        if (blockCount >= 32) {
-            countColor = new Color(2, 190, 58);
-        } else if (blockCount >= 16) {
-            countColor = new Color(255, 249, 18);
-        }
+        Color countColor = RescueModuleUtil.countColor(blockCount);
         String statusFormatting;
         if (this.clutchPath != null) {
             statusFormatting = "\u00a7f\u00a7l";
@@ -712,20 +705,8 @@ extends Mod {
     }
 
     private void showFailNotification(String message, boolean forceUpdate) {
-        boolean shouldEnqueue = false;
-        boolean expired = this.failNotification != null && this.failNotification.isExpired();
-        if (this.failNotification == null) {
-            this.failNotification = new Notification(NotificationType.ALERT, "Clutch Failed", new TextNotificationContent(message), 0.0, 0.0, 3500L);
-            shouldEnqueue = true;
-        } else if (expired || forceUpdate) {
-            shouldEnqueue = expired;
-            TextNotificationContent content = (TextNotificationContent)this.failNotification.getContent();
-            content.setText(message);
-            this.failNotification.setDuration(3500L);
-        }
-        if (shouldEnqueue) {
-            Vape.INSTANCE.getNotificationManager().enqueue(this.failNotification, false);
-        }
+        this.failNotification = RescueModuleUtil.updateFailNotification(
+                this.failNotification, "Clutch Failed", message, forceUpdate);
     }
 
     private boolean isPlayerMoving() {
@@ -1013,9 +994,10 @@ extends Mod {
     }
 
     private int findBestBlockSlot() {
+        InventoryPlayer inventory = Minecraft.thePlayer().V$src$Lgg_vape_wrapper_impl_InventoryPlayer_$erqak6();
         ArrayList<Integer> validSlots = new ArrayList<>();
         for (int i = 0; i < 9; ++i) {
-            ItemStack stack = Minecraft.thePlayer().V$src$Lgg_vape_wrapper_impl_InventoryPlayer_$erqak6().c(i);
+            ItemStack stack = inventory.c(i);
             if (!stack.isNotNull() || !this.isValidBlockItem(stack)) continue;
             if (this.autoLadder.getEffectiveValue().booleanValue() && this.isLadderStack(stack)) continue;
             validSlots.add(i);
@@ -1023,13 +1005,7 @@ extends Mod {
         if (validSlots.isEmpty()) {
             return -1;
         }
-        for (String preferredName : this.defaultBlockNames) {
-            for (Integer slot : validSlots) {
-                if (!Minecraft.thePlayer().V$src$Lgg_vape_wrapper_impl_InventoryPlayer_$erqak6().c(slot).x().contains(preferredName)) continue;
-                return slot;
-            }
-        }
-        return validSlots.get(0);
+        return RescueModuleUtil.findPreferredSlot(inventory, validSlots, this.defaultBlockNames);
     }
 
     private int countBlocks() {

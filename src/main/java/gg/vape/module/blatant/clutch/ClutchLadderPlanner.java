@@ -2,6 +2,7 @@ package gg.vape.module.blatant.clutch;
 
 import gg.vape.config.ClientSettings;
 import gg.vape.module.blatant.Clutch;
+import gg.vape.module.blatant.autoladder.AutoLadderMovementController;
 import gg.vape.module.blatant.blockin.BlockPathPlanner;
 import gg.vape.module.blatant.blockin.BlockPlacementGraph;
 import gg.vape.module.utility.clutch.BlockPathSearchStrategy;
@@ -43,22 +44,10 @@ public final class ClutchLadderPlanner {
     private static final double CATCH_CANDIDATE_RADIUS = 0.67;
     private static final double LADDER_TOP_CLEARANCE_MARGIN = 0.002;
     private static final int MAX_SIMULATION_TICKS = 20;
-    private static final int CENTERING_LOOKAHEAD_TICKS = 2;
     private static final int MAX_EXTENSION_BLOCKS = 6;
     private static final int MAX_REACHABLE_SUPPORTS = 12;
     private static final EnumFacing[] HORIZONTAL_FACINGS =
             EnumFacing.c$src$ALgg_vape_wrapper_impl_EnumFacing_$1i3g4ft();
-    private static final CenterInput[] CENTER_INPUTS = new CenterInput[]{
-            new CenterInput(false, false, false, false),
-            new CenterInput(true, false, false, false),
-            new CenterInput(false, true, false, false),
-            new CenterInput(false, false, true, false),
-            new CenterInput(false, false, false, true),
-            new CenterInput(true, false, true, false),
-            new CenterInput(true, false, false, true),
-            new CenterInput(false, true, true, false),
-            new CenterInput(false, true, false, true)
-    };
 
     private final Clutch clutch;
     private final World world;
@@ -423,11 +412,12 @@ public final class ClutchLadderPlanner {
                 controlStartTick + MAX_SIMULATION_TICKS);
         for (int tick = controlStartTick + 1; tick <= lastTick; ++tick) {
             BlockPlacementGraph snapshot = new BlockPlacementGraph(simulation);
-            CenterInput input = this.chooseCenteringInput(
-                    simulatedPlayer, snapshot, ladderBlock.D() + 0.5,
-                    ladderBlock.G() + 0.5);
-            simulation.setInput(input.forward, input.backward,
-                    input.left, input.right, false, false);
+            AutoLadderMovementController.CenterInput input =
+                    AutoLadderMovementController.chooseCentering(
+                            simulatedPlayer, this.player, this.world, snapshot,
+                            ladderBlock.D() + 0.5, ladderBlock.G() + 0.5);
+            simulation.setInput(input.isForward(), input.isBackward(),
+                    input.isLeft(), input.isRight(), false, false);
             simulation.simulateTick(false);
             TrajectoryPoint current = TrajectoryPoint.capture(
                     tick, simulatedPlayer, simulatedPlayer.b$src$Z$fqlxe4(),
@@ -469,52 +459,6 @@ public final class ClutchLadderPlanner {
             }
         }
         return null;
-    }
-
-    private CenterInput chooseCenteringInput(EntityPlayer sourcePlayer,
-                                             BlockPlacementGraph snapshot,
-                                             double centerX, double centerZ) {
-        CenterInput bestInput = CENTER_INPUTS[0];
-        double bestScore = Double.POSITIVE_INFINITY;
-        for (CenterInput input : CENTER_INPUTS) {
-            double score = this.simulateCenteringInput(
-                    sourcePlayer, snapshot, input, centerX, centerZ);
-            if (score < bestScore) {
-                bestScore = score;
-                bestInput = input;
-            }
-        }
-        return bestInput;
-    }
-
-    private double simulateCenteringInput(EntityPlayer sourcePlayer,
-                                          BlockPlacementGraph snapshot,
-                                          CenterInput input,
-                                          double centerX, double centerZ) {
-        BlockPathPlanner lookahead = new BlockPathPlanner(
-                sourcePlayer, this.player, this.world, snapshot);
-        lookahead.applySnapshot(snapshot);
-        lookahead.setInput(input.forward, input.backward,
-                input.left, input.right, false, false);
-        EntityPlayer simulatedPlayer = lookahead.getSimulatedPlayer();
-        double bestDistanceSq = Double.POSITIVE_INFINITY;
-        for (int tick = 1; tick <= CENTERING_LOOKAHEAD_TICKS; ++tick) {
-            lookahead.simulateTick(false);
-            double deltaX = centerX - simulatedPlayer.z();
-            double deltaZ = centerZ - simulatedPlayer.h();
-            bestDistanceSq = Math.min(bestDistanceSq,
-                    deltaX * deltaX + deltaZ * deltaZ);
-        }
-        double deltaX = centerX - simulatedPlayer.z();
-        double deltaZ = centerZ - simulatedPlayer.h();
-        double finalDistanceSq = deltaX * deltaX + deltaZ * deltaZ;
-        double horizontalSpeedSq = simulatedPlayer.t() * simulatedPlayer.t()
-                + simulatedPlayer.T() * simulatedPlayer.T();
-        double velocityTowardCenter = simulatedPlayer.t() * deltaX
-                + simulatedPlayer.T() * deltaZ;
-        double overshootPenalty = Math.max(0.0, -velocityTowardCenter) * 4000.0;
-        return finalDistanceSq * 10000.0 + bestDistanceSq * 1000.0
-                + horizontalSpeedSq * 150.0 + overshootPenalty;
     }
 
     private boolean verticallyOverlapsLadder(TrajectoryPoint point,
@@ -648,20 +592,6 @@ public final class ClutchLadderPlanner {
         private PlacementOpportunity(int tick, double rotationDistance) {
             this.tick = tick;
             this.rotationDistance = rotationDistance;
-        }
-    }
-
-    private static final class CenterInput {
-        private final boolean forward;
-        private final boolean backward;
-        private final boolean left;
-        private final boolean right;
-
-        private CenterInput(boolean forward, boolean backward, boolean left, boolean right) {
-            this.forward = forward;
-            this.backward = backward;
-            this.left = left;
-            this.right = right;
         }
     }
 

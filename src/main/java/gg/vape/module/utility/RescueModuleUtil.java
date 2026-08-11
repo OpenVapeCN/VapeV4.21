@@ -15,8 +15,6 @@ public final class RescueModuleUtil {
     public static final List<String> PREFERRED_BLOCK_NAMES = Collections.unmodifiableList(
             Arrays.asList("Wool", "Stone", "Wood Planks", "Red Sandstone",
                     "Stained Clay", "End Stone", "Obsidian"));
-    public static final String RESCUE_PRIORITY_DESCRIPTION =
-            "Fall rescue priority order: Clutch > AutoLadder > MLG. When enabled, only acts when higher-priority rescue modules are unavailable or have failed";
 
     private RescueModuleUtil() {
     }

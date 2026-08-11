@@ -168,7 +168,6 @@ extends Mod {
     private int previousSlot = -1;
     private final BooleanValue onMoreThanXBlocks;
     private final BooleanValue allowStaircaseUp;
-    private final BooleanValue rescuePriority;
     private final BooleanValue autoLadder;
     private ClutchLadderPlan ladderPlan;
     private boolean ladderAssistActive;
@@ -385,7 +384,6 @@ extends Mod {
         this.blacklistBlocks = LimitValue.create(this, "clutch-blacklist", "Block blacklist", LimitValue.BLOCK_LIST_COLOR, ItemLimitData.DEFAULT_BLOCK_BLACKLIST);
         this.heldWhitelist = BooleanValue.create(this, "Held whitelist", false, "Only activates clutch when a whitelisted block is held\nWill only use held block for Clutching");
         this.whitelistBlocks = LimitValue.create(this, "clutch-allowedblocks", "Held block whitelist", LimitValue.ALLOW_LIST_COLOR, new ItemLimitData("blocks"));
-        this.rescuePriority = BooleanValue.create(this, "Rescue priority", true, "Fall rescue priority order: Clutch > AutoLadder > MLG. When enabled, this module participates in the chain and lower-priority modules defer to it");
         this.autoLadder = BooleanValue.create(this, "Auto ladder", true, "When the platform would be unreachable in time, quickly extends blocks and places a ladder to catch the fall");
         this.defaultBlockNames = new ArrayList<String>(RescueModuleUtil.PREFERRED_BLOCK_NAMES);
         this.rotationClaim = SharedModuleControlClaims.rotation;
@@ -405,7 +403,7 @@ extends Mod {
         this.limitBlocks.addDependentValues(this.maxBlocks);
         this.silentAim.getDisabledCondition().applyTo(this.resetAngle);
         this.resetAngle.setOverrideColor(ThemeColors.J.r);
-        this.addValue(this.onVoid, this.onLethalFall, this.onMoreThanXBlocks, this.blocksThreshold, this.speed, this.silentAim, this.resetAngle, this.resetAngleDelay, this.returnToLastSlot, this.returnDelay, this.clutchMoveDelay, this.failDelay, this.allowStaircaseUp, this.showBlockCount, this.limitBlocks, this.maxBlocks, this.blacklist, this.blacklistBlocks, this.heldWhitelist, this.whitelistBlocks, this.rescuePriority, this.autoLadder);
+        this.addValue(this.onVoid, this.onLethalFall, this.onMoreThanXBlocks, this.blocksThreshold, this.autoLadder, this.speed, this.silentAim, this.resetAngle, this.resetAngleDelay, this.returnToLastSlot, this.returnDelay, this.clutchMoveDelay, this.failDelay, this.allowStaircaseUp, this.showBlockCount, this.limitBlocks, this.maxBlocks, this.blacklist, this.blacklistBlocks, this.heldWhitelist, this.whitelistBlocks);
         this.rotationClaim.setPriority(this, 60);
     }
 
@@ -547,7 +545,7 @@ extends Mod {
     }
 
     public boolean canHandleFall(EntityPlayerSP localPlayer) {
-        if (!this.isEnabled() || localPlayer == null || localPlayer.isNull() || this.rescuePriority.getEffectiveValue() == false) {
+        if (!this.isEnabled() || localPlayer == null || localPlayer.isNull()) {
             return false;
         }
         if (this.graph == null || !this.failTimer.hasTimeElapsed(((Double)this.failDelay.getValue()).longValue())) {

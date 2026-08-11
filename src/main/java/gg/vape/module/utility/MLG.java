@@ -15,7 +15,6 @@ import gg.vape.module.blatant.blockin.HotbarSlotResolution;
 import gg.vape.module.blatant.blockin.HotbarSlotResolutionWithValue;
 import gg.vape.module.control.FallRescuePriorityManager;
 import gg.vape.module.control.SharedModuleControlClaims;
-import gg.vape.module.utility.RescueModuleUtil;
 import gg.vape.module.utility.inventory.ItemStackActionPredicate;
 import gg.vape.module.utility.mlg.MLGPlacementController;
 import gg.vape.rotation.AdaptiveRotationController;
@@ -73,7 +72,6 @@ extends Mod {
     @Nullable
     private BlockPlacementGraph placementGraph = null;
     public final BooleanValue useCobwebs;
-    private final BooleanValue rescuePriority;
     @NotNull
     public final TimerUtil placementTimer;
     private double accumulatedFall = 0.0;
@@ -144,12 +142,11 @@ extends Mod {
         this.checkInventory = BooleanValue.create(this, "Check inventory", true, "Retrieves MLG Item to use from Inventory if not in Hotbar");
         this.nonRemovableItems = LimitValue.create(this, "mlg-whitelisteditems", "Non-removable Items", LimitValue.ALLOW_LIST_COLOR, Arrays.asList(new ItemLimitData("Water Bucket"), new ItemLimitData("Bucket"), new ItemLimitData("Cobweb")));
         this.healthValue = NumberValue.create(this, "Health", "#", "", 1.0, 5.0, 20.0, 1.0, "Min amount of fall damage for activation");
-        this.rescuePriority = BooleanValue.create(this, "Rescue priority", true, RescueModuleUtil.RESCUE_PRIORITY_DESCRIPTION);
         this.state = MLGState.IDLE;
         this.useBuckets.addDependentValues(this.pickUpWater);
         this.onXDamage.addDependentValues(this.healthValue);
         this.checkInventory.addDependentValues(this.clickDelayValue);
-        this.addValue(this.useBuckets, this.pickUpWater, this.useCobwebs, this.checkInventory, this.clickDelayValue, this.silentAim, this.aimSpeed, this.onLethalFall, this.onXDamage, this.healthValue, this.rescuePriority);
+        this.addValue(this.useBuckets, this.pickUpWater, this.useCobwebs, this.checkInventory, this.clickDelayValue, this.silentAim, this.aimSpeed, this.onLethalFall, this.onXDamage, this.healthValue);
         this.placementController = new MLGPlacementController(this);
         this.slotHelper = new BlockInHotbarSlotHelper(this);
         SharedModuleControlClaims.rotation.setPriority(this, 10);

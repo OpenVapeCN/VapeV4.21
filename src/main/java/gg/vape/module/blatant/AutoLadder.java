@@ -105,7 +105,6 @@ public class AutoLadder extends Mod {
     private final LimitValue blacklistBlocks;
     private final BooleanValue heldWhitelist;
     private final LimitValue whitelistBlocks;
-    private final BooleanValue rescuePriority;
     private final RotationControlClaim rotationClaim;
     private final TimerUtil failTimer;
     private final Set<String> rejectedPlans;
@@ -186,8 +185,6 @@ public class AutoLadder extends Mod {
         this.whitelistBlocks = LimitValue.create(this, "autoladder-allowedblocks",
                 "Held block whitelist", LimitValue.ALLOW_LIST_COLOR,
                 Arrays.asList(new ItemLimitData("blocks"), new ItemLimitData("Ladder")));
-        this.rescuePriority = BooleanValue.create(this, "Rescue priority", true,
-                RescueModuleUtil.RESCUE_PRIORITY_DESCRIPTION);
         this.rotationClaim = SharedModuleControlClaims.rotation;
         this.failTimer = new TimerUtil();
         this.rejectedPlans = new HashSet<>();
@@ -202,7 +199,7 @@ public class AutoLadder extends Mod {
         this.addValue(this.onLethalFall, this.onMoreThanXBlocks, this.blocksThreshold,
                 this.silentAim, this.resetAngle, this.returnToLastSlot, this.returnDelay,
                 this.failDelay, this.showLadderCount, this.blacklist, this.blacklistBlocks,
-                this.heldWhitelist, this.whitelistBlocks, this.rescuePriority);
+                this.heldWhitelist, this.whitelistBlocks);
         this.rotationClaim.setPriority(this, 50);
     }
 
@@ -763,8 +760,7 @@ public class AutoLadder extends Mod {
     }
 
     public boolean canHandleFall(EntityPlayerSP player) {
-        if (!this.isEnabled() || player == null || player.isNull()
-                || !this.rescuePriority.getEffectiveValue().booleanValue()) {
+        if (!this.isEnabled() || player == null || player.isNull()) {
             return false;
         }
         if (!this.failTimer.hasTimeElapsed(((Double)this.failDelay.getValue()).longValue())) {

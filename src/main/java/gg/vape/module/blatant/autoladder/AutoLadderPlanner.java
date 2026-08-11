@@ -39,10 +39,13 @@ public final class AutoLadderPlanner {
     private static final int MAX_SIMULATION_TICKS = 20;
     private static final double SUPPORT_CLEARANCE_MARGIN = 0.04;
     private static final double LADDER_SIDE_ENTRY_DEPTH = 0.28;
-    private static final double LADDER_TOP_CLEARANCE_MARGIN = 0.03;
-    private static final double NO_MOVEMENT_MAX_ERROR = 0.22;
+    private static final double LADDER_TOP_CLEARANCE_MARGIN = 0.002;
+    private static final double CATCH_CELL_INSET = 0.02;
+    private static final double CATCH_CENTER_TOLERANCE = 0.22;
     private static final double CONTROLLED_PATH_MAX_CORRECTION = 0.45;
     private static final double CONTROL_CORRECTION_PER_TICK = 0.12;
+    private static final double CATCH_CANDIDATE_RADIUS =
+            CONTROLLED_PATH_MAX_CORRECTION + CATCH_CENTER_TOLERANCE;
     private static final double LANDING_CENTER_SCORE_WEIGHT = 600.0;
     private static final double FALL_ADJUSTMENT_SCORE = 20.0;
     private static final double PLAN_COUNT_BONUS = 25.0;
@@ -296,15 +299,20 @@ public final class AutoLadderPlanner {
                     }
                     ++this.directOpportunityCount;
                     int slack = point.tick - opportunity.tick;
-                    if (!this.canCorrectToCatch(movementError, slack)) {
+                    ControlledCatch controlledCatch = this.planControlledCatch(
+                            point, ladderBlock, supportBlock, slack);
+                    if (controlledCatch == null) {
                         return;
                     }
-                    if (!this.approachesLadderFromSide(
-                            trajectory, point, ladderBlock, facing, opportunity.tick)) {
+                    if (!this.clearsSupportTopWithControl(
+                            trajectory, point, ladderBlock, supportBlock,
+                            opportunity.tick, controlledCatch)) {
                         ++this.directLadderTopRejectedCount;
                         return;
                     }
-                    double score = movementError * 1000.0 + opportunity.rotationDistance * 2.0
+                    double score = movementError * 1000.0
+                            + controlledCatch.remainingCenterError * 250.0
+                            + opportunity.rotationDistance * 2.0
                             + point.tick * 4.0 - slack * 35.0
                             + this.trajectoryCost(candidate);
                     AutoLadderPlan plan = new AutoLadderPlan(
@@ -368,29 +376,32 @@ public final class AutoLadderPlanner {
                         }
                         ++this.fallbackLadderOpportunityCount;
                         int slack = point.tick - ladderOpportunity.tick;
-                        if (!this.approachesLadderFromSide(
-                                trajectory, point, ladderBlock, ladderFacing,
-                                ladderOpportunity.tick)) {
-                            ++this.fallbackLadderTopRejectedCount;
-                            continue;
-                        }
                         if (this.intersectsBlockBeforeCatchControl(
                                 trajectory, supportBlock, blockOpportunity.tick,
                                 ladderOpportunity.tick)) {
                             ++this.fallbackCollisionRejectedCount;
                             continue;
                         }
-                        if (!this.canCorrectToCatch(movementError, slack)) {
+                        ControlledCatch controlledCatch = this.planControlledCatch(
+                                point, ladderBlock, supportBlock, slack);
+                        if (controlledCatch == null) {
                             ++this.fallbackMovementRejectedCount;
+                            continue;
+                        }
+                        if (!this.clearsSupportTopWithControl(
+                                trajectory, point, ladderBlock, supportBlock,
+                                ladderOpportunity.tick, controlledCatch)) {
+                            ++this.fallbackLadderTopRejectedCount;
                             continue;
                         }
                         if (!this.avoidsSupportDuringCatchControl(
                                 trajectory, point, supportBlock, ladderOpportunity.tick,
-                                catchX, catchZ)) {
+                                controlledCatch)) {
                             ++this.fallbackControlledCollisionRejectedCount;
                             continue;
                         }
                         double score = movementError * 1000.0
+                                + controlledCatch.remainingCenterError * 250.0
                                 + (blockOpportunity.rotationDistance + ladderOpportunity.rotationDistance) * 2.0
                                 + point.tick * 5.0 - slack * 30.0
                                 + this.trajectoryCost(candidate);
@@ -469,23 +480,38 @@ public final class AutoLadderPlanner {
         this.recommendedCenterError = evaluation.trajectory.centerError;
     }
 
-    private boolean canCorrectToCatch(double movementError, int controlTicks) {
-        if (!this.controlMovement) {
-            return movementError <= NO_MOVEMENT_MAX_ERROR;
-        }
-        double correctableDistance = NO_MOVEMENT_MAX_ERROR
-                + Math.max(0, controlTicks) * CONTROL_CORRECTION_PER_TICK;
-        return movementError <= Math.min(CONTROLLED_PATH_MAX_CORRECTION, correctableDistance);
+    @Nullable
+    private ControlledCatch planControlledCatch(TrajectoryPoint catchPoint,
+                                                 BlockData ladderBlock,
+                                                 BlockData supportBlock,
+                                                 int controlTicks) {
+        double centerX = ladderBlock.D() + 0.5;
+        double centerZ = ladderBlock.G() + 0.5;
+        double deltaX = centerX - catchPoint.x;
+        double deltaZ = centerZ - catchPoint.z;
+        double centerDistance = Math.hypot(deltaX, deltaZ);
+        double availableCorrection = this.controlMovement
+                ? Math.min(CONTROLLED_PATH_MAX_CORRECTION,
+                Math.max(0, controlTicks) * CONTROL_CORRECTION_PER_TICK)
+                : 0.0;
+        double appliedCorrection = Math.min(centerDistance, availableCorrection);
+        double correctionScale = centerDistance < 1.0E-9
+                ? 0.0 : appliedCorrection / centerDistance;
+        ControlledCatch controlledCatch = new ControlledCatch(
+                deltaX * correctionScale, deltaZ * correctionScale,
+                centerDistance - appliedCorrection);
+        TrajectoryPoint correctedCatchPoint = catchPoint.offsetHorizontal(
+                controlledCatch.correctionX, controlledCatch.correctionZ);
+        return controlledCatch.remainingCenterError <= CATCH_CENTER_TOLERANCE
+                && this.isSafeCatchPosition(correctedCatchPoint, ladderBlock, supportBlock)
+                ? controlledCatch : null;
     }
 
     private boolean avoidsSupportDuringCatchControl(List<TrajectoryPoint> trajectory,
                                                      TrajectoryPoint catchPoint,
                                                      BlockData supportBlock,
                                                      int controlStartTick,
-                                                     double catchX, double catchZ) {
-        int controlTicks = catchPoint.tick - controlStartTick;
-        double correctionX = catchX - catchPoint.x;
-        double correctionZ = catchZ - catchPoint.z;
+                                                     ControlledCatch controlledCatch) {
         TrajectoryPoint previous = null;
         for (TrajectoryPoint naturalPoint : trajectory) {
             if (naturalPoint.tick < controlStartTick) {
@@ -496,12 +522,8 @@ public final class AutoLadderPlanner {
             }
             TrajectoryPoint pathPoint = naturalPoint.tick == catchPoint.tick
                     ? catchPoint : naturalPoint;
-            double progress = controlTicks <= 0 ? 1.0
-                    : (double)(pathPoint.tick - controlStartTick) / controlTicks;
-            progress = Math.max(0.0, Math.min(1.0, progress));
-            progress *= progress;
-            TrajectoryPoint controlledPoint = pathPoint.offsetHorizontal(
-                    correctionX * progress, correctionZ * progress);
+            TrajectoryPoint controlledPoint = this.applyCatchControl(
+                    pathPoint, catchPoint, controlStartTick, controlledCatch);
             if (controlledPoint.intersectsUnitBlock(supportBlock, SUPPORT_CLEARANCE_MARGIN)
                     || previous != null && previous.sweptIntersectsUnitBlock(
                     controlledPoint, supportBlock, SUPPORT_CLEARANCE_MARGIN)) {
@@ -512,17 +534,16 @@ public final class AutoLadderPlanner {
         return previous != null;
     }
 
-    private boolean approachesLadderFromSide(List<TrajectoryPoint> trajectory,
-                                              TrajectoryPoint catchPoint,
-                                              BlockData ladderBlock,
-                                              EnumFacing ladderFacing,
-                                              int ladderPlacementTick) {
+    private boolean clearsSupportTopWithControl(List<TrajectoryPoint> trajectory,
+                                                TrajectoryPoint catchPoint,
+                                                BlockData ladderBlock,
+                                                BlockData supportBlock,
+                                                int controlStartTick,
+                                                ControlledCatch controlledCatch) {
         double ladderTop = ladderBlock.B() + 1.0;
-        AxisAlignedBB ladderBounds = AutoLadderMovementController
-                .getExpectedLadderBounds(ladderBlock, ladderFacing);
         TrajectoryPoint previous = null;
         for (TrajectoryPoint naturalPoint : trajectory) {
-            if (naturalPoint.tick < ladderPlacementTick - 1) {
+            if (naturalPoint.tick < controlStartTick - 1) {
                 continue;
             }
             if (naturalPoint.tick > catchPoint.tick) {
@@ -530,16 +551,62 @@ public final class AutoLadderPlanner {
             }
             TrajectoryPoint pathPoint = naturalPoint.tick == catchPoint.tick
                     ? catchPoint : naturalPoint;
+            TrajectoryPoint controlledPoint = this.applyCatchControl(
+                    pathPoint, catchPoint, controlStartTick, controlledCatch);
             if (previous != null && previous.y >= ladderTop
-                    && pathPoint.y < ladderTop) {
+                    && controlledPoint.y < ladderTop) {
                 TrajectoryPoint topCrossing = TrajectoryPoint.interpolateAtY(
-                        previous, pathPoint, ladderTop);
-                return !topCrossing.horizontallyIntersects(
+                        previous, controlledPoint, ladderTop);
+                AxisAlignedBB ladderBounds = AutoLadderMovementController
+                        .getExpectedLadderBounds(ladderBlock,
+                                this.facingFromSupport(ladderBlock, supportBlock));
+                return this.isSafeCatchPosition(topCrossing, ladderBlock, supportBlock)
+                        && !topCrossing.horizontallyIntersects(
                         ladderBounds, LADDER_TOP_CLEARANCE_MARGIN);
             }
-            previous = pathPoint;
+            previous = controlledPoint;
         }
-        return true;
+        TrajectoryPoint correctedCatchPoint = catchPoint.offsetHorizontal(
+                controlledCatch.correctionX, controlledCatch.correctionZ);
+        return this.isSafeCatchPosition(correctedCatchPoint, ladderBlock, supportBlock);
+    }
+
+    private TrajectoryPoint applyCatchControl(TrajectoryPoint pathPoint,
+                                              TrajectoryPoint catchPoint,
+                                              int controlStartTick,
+                                              ControlledCatch controlledCatch) {
+        int controlTicks = catchPoint.tick - controlStartTick;
+        double progress = controlTicks <= 0 ? 1.0
+                : (double)(pathPoint.tick - controlStartTick) / controlTicks;
+        progress = Math.max(0.0, Math.min(1.0, progress));
+        progress *= progress;
+        return pathPoint.offsetHorizontal(
+                controlledCatch.correctionX * progress,
+                controlledCatch.correctionZ * progress);
+    }
+
+    private boolean isSafeCatchPosition(TrajectoryPoint point,
+                                        BlockData ladderBlock,
+                                        BlockData supportBlock) {
+        boolean centerInsideLadderCell = point.x >= ladderBlock.D() + CATCH_CELL_INSET
+                && point.x <= ladderBlock.D() + 1.0 - CATCH_CELL_INSET
+                && point.z >= ladderBlock.G() + CATCH_CELL_INSET
+                && point.z <= ladderBlock.G() + 1.0 - CATCH_CELL_INSET;
+        return centerInsideLadderCell
+                && !point.horizontallyIntersectsUnitBlock(
+                supportBlock, SUPPORT_CLEARANCE_MARGIN);
+    }
+
+    private EnumFacing facingFromSupport(BlockData ladderBlock, BlockData supportBlock) {
+        int directionX = ladderBlock.D() - supportBlock.D();
+        int directionZ = ladderBlock.G() - supportBlock.G();
+        for (EnumFacing facing : HORIZONTAL_FACINGS) {
+            if (facing.getDirectionVector().getX() == directionX
+                    && facing.getDirectionVector().getZ() == directionZ) {
+                return facing;
+            }
+        }
+        return HORIZONTAL_FACINGS[0];
     }
 
     private List<CatchSample> findCatchSamples(List<TrajectoryPoint> trajectory) {
@@ -630,9 +697,7 @@ public final class AutoLadderPlanner {
                 for (EnumFacing facing : HORIZONTAL_FACINGS) {
                     double[] catchPoint = this.computeCatchPoint(ladderBlock);
                     double movementError = Math.hypot(catchPoint[0] - point.x, catchPoint[1] - point.z);
-                    double allowedError = this.controlMovement
-                            ? CONTROLLED_PATH_MAX_CORRECTION : NO_MOVEMENT_MAX_ERROR;
-                    if (movementError > allowedError) {
+                    if (movementError > CATCH_CANDIDATE_RADIUS) {
                         continue;
                     }
                     ++this.catchGeometryCount;
@@ -920,6 +985,19 @@ public final class AutoLadderPlanner {
                     + directSupportDelta * 4
                     + catchGeometryDelta
                     - rejectionDelta * 5;
+        }
+    }
+
+    private static final class ControlledCatch {
+        private final double correctionX;
+        private final double correctionZ;
+        private final double remainingCenterError;
+
+        private ControlledCatch(double correctionX, double correctionZ,
+                                double remainingCenterError) {
+            this.correctionX = correctionX;
+            this.correctionZ = correctionZ;
+            this.remainingCenterError = remainingCenterError;
         }
     }
 

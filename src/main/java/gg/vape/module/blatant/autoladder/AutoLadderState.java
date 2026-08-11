@@ -6,7 +6,7 @@ public enum AutoLadderState {
     SEARCHING_BLOCK,
     PLACING_BLOCK,
     PLACING_LADDER,
-    CATCHING_LADDER,
+    CENTERING,
     FAIL,
     SAFE
 }

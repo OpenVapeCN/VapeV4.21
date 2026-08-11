@@ -150,7 +150,7 @@ public class AutoLadder extends Mod {
         this.placeSupportBlock = BooleanValue.create(this, "Place support block", true,
                 "Place one stable block when no catchable existing face is available");
         this.catchMovement = BooleanValue.create(this, "Catch movement", true,
-                "Fine-tunes the fall and controls movement while approaching the ladder");
+                "Fine-tunes the fall and centers the player in the ladder block after placement");
         this.speed = NumberValue.create(this, "Speed", "#.#", "", 1.0, 3.5, 10.0, 0.1,
                 "Maximum flick speed while placing the support and ladder");
         this.silentAim = BooleanValue.create(this, "Silent aim", false,
@@ -312,8 +312,8 @@ public class AutoLadder extends Mod {
             case PLACING_LADDER:
                 this.handleLadderPlacement(player, world);
                 break;
-            case CATCHING_LADDER:
-                this.handleCatching(player, world);
+            case CENTERING:
+                this.handleCentering(player, world);
                 break;
             case SAFE:
                 if (this.stateTicks >= SAFE_HOLD_TICKS) {
@@ -379,7 +379,7 @@ public class AutoLadder extends Mod {
         if (this.state == AutoLadderState.PLACING_LADDER) {
             this.confirmLadder(world, "post-tick");
         }
-        if (this.state != AutoLadderState.CATCHING_LADDER || this.plan == null
+        if (this.state != AutoLadderState.CENTERING || this.plan == null
                 || !this.isLadder(world, this.plan.getLadderBlock())) {
             return;
         }
@@ -410,7 +410,7 @@ public class AutoLadder extends Mod {
             this.restoreMovementInput();
             return;
         }
-        if (this.fallAdjustmentPending && this.state != AutoLadderState.CATCHING_LADDER) {
+        if (this.fallAdjustmentPending && this.state != AutoLadderState.CENTERING) {
             AutoLadderFallAdjustment adjustment = this.pendingFallAdjustment;
             this.fallAdjustmentPending = false;
             this.audit("joint-fall input " + adjustment.describe()
@@ -421,19 +421,26 @@ public class AutoLadder extends Mod {
             this.movementControlled = adjustment.overridesInput();
             return;
         }
-        if (this.state == AutoLadderState.CATCHING_LADDER) {
+        if (this.state == AutoLadderState.CENTERING) {
             this.fallAdjustmentPending = false;
         }
         if (this.plan == null || !this.shouldControlMovement()) {
             this.restoreMovementInput();
             return;
         }
-        AutoLadderMovementController.CatchInput input = AutoLadderMovementController.choose(
-                player, player.getWorld(), this.plan);
-        this.audit("catch input " + input.describe()
+        AutoLadderMovementController.CenterInput input =
+                AutoLadderMovementController.chooseCentering(
+                        player, player.getWorld(),
+                        this.plan.getCatchX(), this.plan.getCatchZ());
+        this.audit("center input " + input.describe()
                 + " onLadder=" + player.boolean_S()
-                + " catchable=" + AutoLadderMovementController.isCatchableNow(
+                + " insideLadderBounds=" + AutoLadderMovementController.isInsideLadderBounds(
                 player, player.getWorld(), this.plan)
+                + " pos=" + this.playerPosition(player)
+                + " motion=[" + this.roundDistance(player.t()) + ','
+                + this.roundDistance(player.q()) + ','
+                + this.roundDistance(player.T()) + "]"
+                + " fallDistance=" + player.getFallDistance()
                 + " target=" + this.plan.getLadderBlock()
                 + " catchPos=[" + this.roundDistance(this.plan.getCatchX())
                 + ',' + this.roundDistance(this.plan.getCatchZ()) + ']');
@@ -591,7 +598,7 @@ public class AutoLadder extends Mod {
         this.supportConfirmed = candidate.getMode() != AutoLadderPlan.Mode.BUILD_SUPPORT;
         this.resetPlacementAttempts();
         if (candidate.getMode() == AutoLadderPlan.Mode.EXISTING_LADDER) {
-            this.transition(AutoLadderState.CATCHING_LADDER);
+            this.transition(AutoLadderState.CENTERING);
         } else {
             this.lockPlacementButtons();
             this.transition(candidate.getMode() == AutoLadderPlan.Mode.BUILD_SUPPORT
@@ -676,14 +683,14 @@ public class AutoLadder extends Mod {
                 + " target=" + this.describeTarget(target) + " ray=" + this.describePlacementRay());
     }
 
-    private void handleCatching(EntityPlayerSP player, World world) {
+    private void handleCentering(EntityPlayerSP player, World world) {
         if (this.plan == null || !this.isLadder(world, this.plan.getLadderBlock())) {
-            this.audit("catch failed: planned ladder missing");
+            this.audit("centering failed: planned ladder missing");
             this.invalidatePlan(true);
             return;
         }
         if (player.N() < this.plan.getLadderBlock().B() - 0.05) {
-            this.audit("catch expired playerY=" + player.N()
+            this.audit("centering expired playerY=" + player.N()
                     + " ladderY=" + this.plan.getLadderBlock().B());
             this.enterFail(true);
         }
@@ -698,11 +705,11 @@ public class AutoLadder extends Mod {
         }
         this.rejectedPlans.clear();
         this.fallEpisodeResolved = false;
-        if (this.state == AutoLadderState.CATCHING_LADDER && this.plan != null
+        if (this.state == AutoLadderState.CENTERING && this.plan != null
                 && this.isLadder(player.getWorld(), this.plan.getLadderBlock())
                 && player.boolean_S() && player.getFallDistance() <= 0.5f) {
-            this.audit("grounded ladder capture confirmed catchable="
-                    + AutoLadderMovementController.isCatchableNow(
+            this.audit("grounded ladder reset confirmed insideLadderBounds="
+                    + AutoLadderMovementController.isInsideLadderBounds(
                     player, player.getWorld(), this.plan));
             this.transition(AutoLadderState.SAFE);
             this.completeSafeRun();
@@ -719,7 +726,7 @@ public class AutoLadder extends Mod {
         if (this.state == AutoLadderState.SAFE) {
             this.completeSafeRun();
         } else {
-            this.audit("grounded before ladder catch state=" + this.state
+            this.audit("grounded before ladder reset state=" + this.state
                     + " ladderPresent=" + (this.plan != null
                     && this.isLadder(player.getWorld(), this.plan.getLadderBlock()))
                     + " health=" + this.effectiveHealth(player)
@@ -729,7 +736,7 @@ public class AutoLadder extends Mod {
     }
 
     private boolean shouldControlMovement() {
-        return this.state == AutoLadderState.CATCHING_LADDER;
+        return this.state == AutoLadderState.CENTERING;
     }
 
     private void queueFallAdjustment(AutoLadderFallAdjustment adjustment, double centerError) {
@@ -741,7 +748,7 @@ public class AutoLadder extends Mod {
     private boolean isExecutingPlan() {
         return this.plan != null && (this.state == AutoLadderState.PLACING_BLOCK
                 || this.state == AutoLadderState.PLACING_LADDER
-                || this.state == AutoLadderState.CATCHING_LADDER
+                || this.state == AutoLadderState.CENTERING
                 || this.state == AutoLadderState.SAFE);
     }
 
@@ -936,7 +943,7 @@ public class AutoLadder extends Mod {
         this.releasePlacementButtons();
         this.releaseSilentPlacementRotation();
         this.resetPlacementAttempts();
-        this.transition(AutoLadderState.CATCHING_LADDER);
+        this.transition(AutoLadderState.CENTERING);
         return true;
     }
 

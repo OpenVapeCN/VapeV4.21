@@ -41,17 +41,25 @@ public final class AutoLadderPlanner {
     private static final double LADDER_SIDE_ENTRY_DEPTH = 0.28;
     private static final double LADDER_TOP_CLEARANCE_MARGIN = 0.002;
     private static final double CATCH_CELL_INSET = 0.02;
-    private static final double CATCH_CENTER_TOLERANCE = 0.22;
-    private static final double CONTROLLED_PATH_MAX_CORRECTION = 0.45;
-    private static final double CONTROL_CORRECTION_PER_TICK = 0.12;
-    private static final double CATCH_CANDIDATE_RADIUS =
-            CONTROLLED_PATH_MAX_CORRECTION + CATCH_CENTER_TOLERANCE;
+    private static final double CATCH_CANDIDATE_RADIUS = 0.67;
+    private static final int CENTERING_LOOKAHEAD_TICKS = 2;
     private static final double LANDING_CENTER_SCORE_WEIGHT = 600.0;
     private static final double FALL_ADJUSTMENT_SCORE = 20.0;
     private static final double PLAN_COUNT_BONUS = 25.0;
     private static final EnumFacing[] HORIZONTAL_FACINGS =
             EnumFacing.c$src$ALgg_vape_wrapper_impl_EnumFacing_$1i3g4ft();
     private static final EnumFacing[] ALL_FACINGS = EnumFacing.t();
+    private static final CenterInput[] CENTER_INPUTS = new CenterInput[]{
+            new CenterInput(false, false, false, false),
+            new CenterInput(true, false, false, false),
+            new CenterInput(false, true, false, false),
+            new CenterInput(false, false, true, false),
+            new CenterInput(false, false, false, true),
+            new CenterInput(true, false, true, false),
+            new CenterInput(true, false, false, true),
+            new CenterInput(false, true, true, false),
+            new CenterInput(false, true, false, true)
+    };
 
     private final World world;
     private final EntityPlayerSP player;
@@ -81,6 +89,11 @@ public final class AutoLadderPlanner {
     private int fallbackMovementRejectedCount;
     private int fallbackControlledCollisionRejectedCount;
     private int fallbackLadderTopRejectedCount;
+    private int inertiaSimulationCount;
+    private int inertiaGroundRejectedCount;
+    private int inertiaSupportRejectedCount;
+    private int inertiaLadderTopRejectedCount;
+    private int inertiaMissRejectedCount;
     private int sweptCatchSampleCount;
     private int evaluatedTrajectoryCount;
     private int minimumCatchLayer = Integer.MAX_VALUE;
@@ -201,6 +214,11 @@ public final class AutoLadderPlanner {
                 + ",controlledCollisionRejected=" + this.fallbackControlledCollisionRejectedCount
                 + ",ladderTopRejected=" + this.fallbackLadderTopRejectedCount
                 + ",plans=" + supportPlans + '}'
+                + " inertia{simulations=" + this.inertiaSimulationCount
+                + ",groundRejected=" + this.inertiaGroundRejectedCount
+                + ",supportRejected=" + this.inertiaSupportRejectedCount
+                + ",ladderTopRejected=" + this.inertiaLadderTopRejectedCount
+                + ",missRejected=" + this.inertiaMissRejectedCount + '}'
                 + " selected=" + (selected == null ? "none" : selected.describe());
     }
 
@@ -241,7 +259,8 @@ public final class AutoLadderPlanner {
         List<TrajectoryPoint> points = new ArrayList<>();
         for (int tick = 0; tick <= MAX_SIMULATION_TICKS; ++tick) {
             boolean onGround = simulatedPlayer.b$src$Z$fqlxe4();
-            points.add(TrajectoryPoint.capture(tick, simulatedPlayer, onGround));
+            points.add(TrajectoryPoint.capture(
+                    tick, simulatedPlayer, onGround, new BlockPlacementGraph(simulation)));
             if (tick > 0 && onGround) {
                 break;
             }
@@ -298,26 +317,22 @@ public final class AutoLadderPlanner {
                         return;
                     }
                     ++this.directOpportunityCount;
-                    int slack = point.tick - opportunity.tick;
-                    ControlledCatch controlledCatch = this.planControlledCatch(
-                            point, ladderBlock, supportBlock, slack);
+                    ControlledCatch controlledCatch = this.simulateControlledCatch(
+                            trajectory, opportunity.tick, ladderBlock, supportBlock);
                     if (controlledCatch == null) {
-                        return;
-                    }
-                    if (!this.clearsSupportTopWithControl(
-                            trajectory, point, ladderBlock, supportBlock,
-                            opportunity.tick, controlledCatch)) {
                         ++this.directLadderTopRejectedCount;
                         return;
                     }
+                    int slack = controlledCatch.catchTick - opportunity.tick;
                     double score = movementError * 1000.0
                             + controlledCatch.remainingCenterError * 250.0
                             + opportunity.rotationDistance * 2.0
-                            + point.tick * 4.0 - slack * 35.0
+                            + controlledCatch.catchTick * 4.0 - slack * 35.0
                             + this.trajectoryCost(candidate);
                     AutoLadderPlan plan = new AutoLadderPlan(
                             AutoLadderPlan.Mode.DIRECT, null, ladderTarget,
-                            catchX, catchZ, point.tick, -1, opportunity.tick, score,
+                            catchX, catchZ, controlledCatch.catchTick,
+                            -1, opportunity.tick, score,
                             candidate.adjustment);
                     this.addPlan(plans, plan);
             });
@@ -375,39 +390,29 @@ public final class AutoLadderPlanner {
                             continue;
                         }
                         ++this.fallbackLadderOpportunityCount;
-                        int slack = point.tick - ladderOpportunity.tick;
                         if (this.intersectsBlockBeforeCatchControl(
                                 trajectory, supportBlock, blockOpportunity.tick,
                                 ladderOpportunity.tick)) {
                             ++this.fallbackCollisionRejectedCount;
                             continue;
                         }
-                        ControlledCatch controlledCatch = this.planControlledCatch(
-                                point, ladderBlock, supportBlock, slack);
+                        ControlledCatch controlledCatch = this.simulateControlledCatch(
+                                trajectory, ladderOpportunity.tick,
+                                ladderBlock, supportBlock);
                         if (controlledCatch == null) {
                             ++this.fallbackMovementRejectedCount;
                             continue;
                         }
-                        if (!this.clearsSupportTopWithControl(
-                                trajectory, point, ladderBlock, supportBlock,
-                                ladderOpportunity.tick, controlledCatch)) {
-                            ++this.fallbackLadderTopRejectedCount;
-                            continue;
-                        }
-                        if (!this.avoidsSupportDuringCatchControl(
-                                trajectory, point, supportBlock, ladderOpportunity.tick,
-                                controlledCatch)) {
-                            ++this.fallbackControlledCollisionRejectedCount;
-                            continue;
-                        }
+                        int slack = controlledCatch.catchTick - ladderOpportunity.tick;
                         double score = movementError * 1000.0
                                 + controlledCatch.remainingCenterError * 250.0
                                 + (blockOpportunity.rotationDistance + ladderOpportunity.rotationDistance) * 2.0
-                                + point.tick * 5.0 - slack * 30.0
+                                + controlledCatch.catchTick * 5.0 - slack * 30.0
                                 + this.trajectoryCost(candidate);
                         AutoLadderPlan plan = new AutoLadderPlan(
                                 AutoLadderPlan.Mode.BUILD_SUPPORT, blockTarget, ladderTarget,
-                                catchX, catchZ, point.tick, blockOpportunity.tick,
+                                catchX, catchZ, controlledCatch.catchTick,
+                                blockOpportunity.tick,
                                 ladderOpportunity.tick, score, candidate.adjustment);
                         this.addPlan(plans, plan);
                     }
@@ -481,108 +486,145 @@ public final class AutoLadderPlanner {
     }
 
     @Nullable
-    private ControlledCatch planControlledCatch(TrajectoryPoint catchPoint,
-                                                 BlockData ladderBlock,
-                                                 BlockData supportBlock,
-                                                 int controlTicks) {
-        double centerX = ladderBlock.D() + 0.5;
-        double centerZ = ladderBlock.G() + 0.5;
-        double deltaX = centerX - catchPoint.x;
-        double deltaZ = centerZ - catchPoint.z;
-        double centerDistance = Math.hypot(deltaX, deltaZ);
-        double availableCorrection = this.controlMovement
-                ? Math.min(CONTROLLED_PATH_MAX_CORRECTION,
-                Math.max(0, controlTicks) * CONTROL_CORRECTION_PER_TICK)
-                : 0.0;
-        double appliedCorrection = Math.min(centerDistance, availableCorrection);
-        double correctionScale = centerDistance < 1.0E-9
-                ? 0.0 : appliedCorrection / centerDistance;
-        ControlledCatch controlledCatch = new ControlledCatch(
-                deltaX * correctionScale, deltaZ * correctionScale,
-                centerDistance - appliedCorrection);
-        TrajectoryPoint correctedCatchPoint = catchPoint.offsetHorizontal(
-                controlledCatch.correctionX, controlledCatch.correctionZ);
-        return controlledCatch.remainingCenterError <= CATCH_CENTER_TOLERANCE
-                && this.isSafeCatchPosition(correctedCatchPoint, ladderBlock, supportBlock)
-                ? controlledCatch : null;
-    }
-
-    private boolean avoidsSupportDuringCatchControl(List<TrajectoryPoint> trajectory,
-                                                     TrajectoryPoint catchPoint,
-                                                     BlockData supportBlock,
+    private ControlledCatch simulateControlledCatch(List<TrajectoryPoint> trajectory,
                                                      int controlStartTick,
-                                                     ControlledCatch controlledCatch) {
-        TrajectoryPoint previous = null;
-        for (TrajectoryPoint naturalPoint : trajectory) {
-            if (naturalPoint.tick < controlStartTick) {
-                continue;
-            }
-            if (naturalPoint.tick > catchPoint.tick) {
-                break;
-            }
-            TrajectoryPoint pathPoint = naturalPoint.tick == catchPoint.tick
-                    ? catchPoint : naturalPoint;
-            TrajectoryPoint controlledPoint = this.applyCatchControl(
-                    pathPoint, catchPoint, controlStartTick, controlledCatch);
-            if (controlledPoint.intersectsUnitBlock(supportBlock, SUPPORT_CLEARANCE_MARGIN)
-                    || previous != null && previous.sweptIntersectsUnitBlock(
-                    controlledPoint, supportBlock, SUPPORT_CLEARANCE_MARGIN)) {
-                return false;
-            }
-            previous = controlledPoint;
+                                                     BlockData ladderBlock,
+                                                     BlockData supportBlock) {
+        ++this.inertiaSimulationCount;
+        TrajectoryPoint start = this.pointAtTick(trajectory, controlStartTick);
+        if (start == null || start.snapshot == null) {
+            ++this.inertiaMissRejectedCount;
+            return null;
         }
-        return previous != null;
-    }
+        BlockPathPlanner simulation = new BlockPathPlanner(
+                this.player, this.player, this.world, start.snapshot);
+        simulation.applySnapshot(start.snapshot);
+        EntityPlayer simulatedPlayer = simulation.getSimulatedPlayer();
+        TrajectoryPoint previous = TrajectoryPoint.capture(
+                controlStartTick, simulatedPlayer,
+                simulatedPlayer.b$src$Z$fqlxe4(), new BlockPlacementGraph(simulation));
+        if (this.isSafeCatchPosition(previous, ladderBlock, supportBlock)
+                && this.verticallyOverlapsLadder(previous, ladderBlock)) {
+            return new ControlledCatch(controlStartTick,
+                    this.centerError(previous, ladderBlock));
+        }
 
-    private boolean clearsSupportTopWithControl(List<TrajectoryPoint> trajectory,
-                                                TrajectoryPoint catchPoint,
-                                                BlockData ladderBlock,
-                                                BlockData supportBlock,
-                                                int controlStartTick,
-                                                ControlledCatch controlledCatch) {
-        double ladderTop = ladderBlock.B() + 1.0;
-        TrajectoryPoint previous = null;
-        for (TrajectoryPoint naturalPoint : trajectory) {
-            if (naturalPoint.tick < controlStartTick - 1) {
-                continue;
+        EnumFacing ladderFacing = this.facingFromSupport(ladderBlock, supportBlock);
+        AxisAlignedBB ladderBounds = AutoLadderMovementController
+                .getExpectedLadderBounds(ladderBlock, ladderFacing);
+        int lastTick = Math.min(MAX_SIMULATION_TICKS,
+                controlStartTick + MAX_SIMULATION_TICKS);
+        for (int tick = controlStartTick + 1; tick <= lastTick; ++tick) {
+            BlockPlacementGraph snapshot = new BlockPlacementGraph(simulation);
+            CenterInput input = this.chooseCenteringInput(
+                    simulatedPlayer, snapshot, ladderBlock.D() + 0.5,
+                    ladderBlock.G() + 0.5);
+            simulation.setInput(input.forward, input.backward,
+                    input.left, input.right, false, false);
+            simulation.simulateTick(false);
+            TrajectoryPoint current = TrajectoryPoint.capture(
+                    tick, simulatedPlayer, simulatedPlayer.b$src$Z$fqlxe4(),
+                    new BlockPlacementGraph(simulation));
+
+            if (current.intersectsUnitBlock(supportBlock, SUPPORT_CLEARANCE_MARGIN)
+                    || previous.sweptIntersectsUnitBlock(
+                    current, supportBlock, SUPPORT_CLEARANCE_MARGIN)) {
+                ++this.inertiaSupportRejectedCount;
+                return null;
             }
-            if (naturalPoint.tick > catchPoint.tick) {
-                break;
-            }
-            TrajectoryPoint pathPoint = naturalPoint.tick == catchPoint.tick
-                    ? catchPoint : naturalPoint;
-            TrajectoryPoint controlledPoint = this.applyCatchControl(
-                    pathPoint, catchPoint, controlStartTick, controlledCatch);
-            if (previous != null && previous.y >= ladderTop
-                    && controlledPoint.y < ladderTop) {
+            double ladderTop = ladderBlock.B() + 1.0;
+            if (previous.y >= ladderTop && current.y < ladderTop) {
                 TrajectoryPoint topCrossing = TrajectoryPoint.interpolateAtY(
-                        previous, controlledPoint, ladderTop);
-                AxisAlignedBB ladderBounds = AutoLadderMovementController
-                        .getExpectedLadderBounds(ladderBlock,
-                                this.facingFromSupport(ladderBlock, supportBlock));
-                return this.isSafeCatchPosition(topCrossing, ladderBlock, supportBlock)
-                        && !topCrossing.horizontallyIntersects(
-                        ladderBounds, LADDER_TOP_CLEARANCE_MARGIN);
+                        previous, current, ladderTop);
+                if (topCrossing.horizontallyIntersects(
+                        ladderBounds, LADDER_TOP_CLEARANCE_MARGIN)) {
+                    ++this.inertiaLadderTopRejectedCount;
+                    return null;
+                }
             }
-            previous = controlledPoint;
+            if (current.onGround) {
+                ++this.inertiaGroundRejectedCount;
+                return null;
+            }
+            if (this.isSafeCatchPosition(current, ladderBlock, supportBlock)
+                    && this.verticallyOverlapsLadder(current, ladderBlock)) {
+                return new ControlledCatch(tick,
+                        this.centerError(current, ladderBlock));
+            }
+            if (current.y < ladderBlock.B() - 0.05 || current.motionY >= 0.0) {
+                ++this.inertiaMissRejectedCount;
+                return null;
+            }
+            previous = current;
         }
-        TrajectoryPoint correctedCatchPoint = catchPoint.offsetHorizontal(
-                controlledCatch.correctionX, controlledCatch.correctionZ);
-        return this.isSafeCatchPosition(correctedCatchPoint, ladderBlock, supportBlock);
+        ++this.inertiaMissRejectedCount;
+        return null;
     }
 
-    private TrajectoryPoint applyCatchControl(TrajectoryPoint pathPoint,
-                                              TrajectoryPoint catchPoint,
-                                              int controlStartTick,
-                                              ControlledCatch controlledCatch) {
-        int controlTicks = catchPoint.tick - controlStartTick;
-        double progress = controlTicks <= 0 ? 1.0
-                : (double)(pathPoint.tick - controlStartTick) / controlTicks;
-        progress = Math.max(0.0, Math.min(1.0, progress));
-        progress *= progress;
-        return pathPoint.offsetHorizontal(
-                controlledCatch.correctionX * progress,
-                controlledCatch.correctionZ * progress);
+    @Nullable
+    private TrajectoryPoint pointAtTick(List<TrajectoryPoint> trajectory, int tick) {
+        for (TrajectoryPoint point : trajectory) {
+            if (point.tick == tick) {
+                return point;
+            }
+        }
+        return null;
+    }
+
+    private CenterInput chooseCenteringInput(EntityPlayer sourcePlayer,
+                                             BlockPlacementGraph snapshot,
+                                             double centerX, double centerZ) {
+        CenterInput bestInput = CENTER_INPUTS[0];
+        double bestScore = Double.POSITIVE_INFINITY;
+        for (CenterInput input : CENTER_INPUTS) {
+            double score = this.simulateCenteringInput(
+                    sourcePlayer, snapshot, input, centerX, centerZ);
+            if (score < bestScore) {
+                bestScore = score;
+                bestInput = input;
+            }
+        }
+        return bestInput;
+    }
+
+    private double simulateCenteringInput(EntityPlayer sourcePlayer,
+                                          BlockPlacementGraph snapshot,
+                                          CenterInput input,
+                                          double centerX, double centerZ) {
+        BlockPathPlanner lookahead = new BlockPathPlanner(
+                sourcePlayer, this.player, this.world, snapshot);
+        lookahead.applySnapshot(snapshot);
+        lookahead.setInput(input.forward, input.backward,
+                input.left, input.right, false, false);
+        EntityPlayer simulatedPlayer = lookahead.getSimulatedPlayer();
+        double bestDistanceSq = Double.POSITIVE_INFINITY;
+        for (int tick = 1; tick <= CENTERING_LOOKAHEAD_TICKS; ++tick) {
+            lookahead.simulateTick(false);
+            double deltaX = centerX - simulatedPlayer.z();
+            double deltaZ = centerZ - simulatedPlayer.h();
+            bestDistanceSq = Math.min(bestDistanceSq,
+                    deltaX * deltaX + deltaZ * deltaZ);
+        }
+        double deltaX = centerX - simulatedPlayer.z();
+        double deltaZ = centerZ - simulatedPlayer.h();
+        double finalDistanceSq = deltaX * deltaX + deltaZ * deltaZ;
+        double horizontalSpeedSq = simulatedPlayer.t() * simulatedPlayer.t()
+                + simulatedPlayer.T() * simulatedPlayer.T();
+        double velocityTowardCenter = simulatedPlayer.t() * deltaX
+                + simulatedPlayer.T() * deltaZ;
+        double overshootPenalty = Math.max(0.0, -velocityTowardCenter) * 4000.0;
+        return finalDistanceSq * 10000.0 + bestDistanceSq * 1000.0
+                + horizontalSpeedSq * 150.0 + overshootPenalty;
+    }
+
+    private boolean verticallyOverlapsLadder(TrajectoryPoint point,
+                                             BlockData ladderBlock) {
+        return point.maxY > ladderBlock.B() && point.minY < ladderBlock.B() + 1.0;
+    }
+
+    private double centerError(TrajectoryPoint point, BlockData ladderBlock) {
+        return Math.hypot(point.x - (ladderBlock.D() + 0.5),
+                point.z - (ladderBlock.G() + 0.5));
     }
 
     private boolean isSafeCatchPosition(TrajectoryPoint point,
@@ -989,15 +1031,27 @@ public final class AutoLadderPlanner {
     }
 
     private static final class ControlledCatch {
-        private final double correctionX;
-        private final double correctionZ;
+        private final int catchTick;
         private final double remainingCenterError;
 
-        private ControlledCatch(double correctionX, double correctionZ,
-                                double remainingCenterError) {
-            this.correctionX = correctionX;
-            this.correctionZ = correctionZ;
+        private ControlledCatch(int catchTick, double remainingCenterError) {
+            this.catchTick = catchTick;
             this.remainingCenterError = remainingCenterError;
+        }
+    }
+
+    private static final class CenterInput {
+        private final boolean forward;
+        private final boolean backward;
+        private final boolean left;
+        private final boolean right;
+
+        private CenterInput(boolean forward, boolean backward,
+                            boolean left, boolean right) {
+            this.forward = forward;
+            this.backward = backward;
+            this.left = left;
+            this.right = right;
         }
     }
 
@@ -1027,9 +1081,10 @@ public final class AutoLadderPlanner {
         private final double maxY;
         private final double maxZ;
         private final boolean onGround;
+        private final BlockPlacementGraph snapshot;
         private TrajectoryPoint(int tick, double x, double y, double z, double eyeY,
                                 double motionY, float yaw, float pitch, AxisAlignedBB bounds,
-                                boolean onGround) {
+                                boolean onGround, BlockPlacementGraph snapshot) {
             this.tick = tick;
             this.x = x;
             this.y = y;
@@ -1045,12 +1100,15 @@ public final class AutoLadderPlanner {
             this.maxY = bounds.getMaxY();
             this.maxZ = bounds.getMaxZ();
             this.onGround = onGround;
+            this.snapshot = snapshot;
         }
 
-        private static TrajectoryPoint capture(int tick, EntityPlayer player, boolean onGround) {
+        private static TrajectoryPoint capture(int tick, EntityPlayer player, boolean onGround,
+                                               BlockPlacementGraph snapshot) {
             AxisAlignedBB bounds = player.u$src$Lgg_vape_wrapper_impl_AxisAlignedBB_$kogbsu();
             return new TrajectoryPoint(tick, player.z(), player.N(), player.h(),
-                    player.N() + player.X(), player.q(), player.J(), player.V(), bounds, onGround);
+                    player.N() + player.X(), player.q(), player.J(), player.V(), bounds,
+                    onGround, snapshot);
         }
 
         private static TrajectoryPoint interpolateAtY(TrajectoryPoint start,
@@ -1075,7 +1133,7 @@ public final class AutoLadderPlanner {
                     lerp(start.maxY, end.maxY, progress),
                     lerp(start.maxZ, end.maxZ, progress));
             return new TrajectoryPoint(end.tick, x, targetY, z, eyeY,
-                    motionY, yaw, pitch, bounds, false);
+                    motionY, yaw, pitch, bounds, false, end.snapshot);
         }
 
         private static double lerp(double start, double end, double progress) {
@@ -1170,7 +1228,7 @@ public final class AutoLadderPlanner {
                     this.maxX + xOffset, this.maxY, this.maxZ + zOffset);
             return new TrajectoryPoint(this.tick, this.x + xOffset, this.y,
                     this.z + zOffset, this.eyeY, this.motionY,
-                    this.yaw, this.pitch, shiftedBounds, this.onGround);
+                    this.yaw, this.pitch, shiftedBounds, this.onGround, this.snapshot);
         }
     }
 }

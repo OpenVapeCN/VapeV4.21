@@ -16,6 +16,7 @@ import gg.vape.wrapper.impl.Vec3;
 import java.awt.Color;
 
 public class BedTargetRenderState {
+    private static final float TOOL_ICON_SIZE_RATIO = 0.55f;
     private ProjectedEntityBounds projectedBounds;
     private final BedTargetRenderPosition targetPosition;
     private float visibilityProgress = 0.0f;
@@ -86,10 +87,11 @@ public class BedTargetRenderState {
             }
         }
         if (toolIcon != null && toolIcon.isNotNull()) {
-            float iconSize = Math.min(16.0f, indicatorSize * 0.55f);
-            float iconX = indicatorX + (indicatorSize - iconSize) / 2.0f;
-            float iconY = indicatorY + (indicatorSize - iconSize) / 2.0f;
-            ItemIconRenderer.renderItemStack(toolIcon, iconX, iconY, (int)iconSize, (int)iconSize, distanceFade);
+            int iconSize = Math.max(1, Math.round(indicatorSize * TOOL_ICON_SIZE_RATIO));
+            float iconX = indicatorX + (indicatorSize - (float)iconSize) / 2.0f;
+            float iconY = indicatorY + (indicatorSize - (float)iconSize) / 2.0f;
+            ItemIconRenderer.renderItemStack(toolIcon, iconX, iconY,
+                    iconSize, iconSize, distanceFade);
         }
     }
 

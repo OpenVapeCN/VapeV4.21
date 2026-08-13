@@ -1,9 +1,16 @@
 package gg.vape.module.world;
 
 import func.skidline.RectData;
+import gg.vape.config.ClientSettings;
 import gg.vape.event.EventHandler;
+import gg.vape.event.EventPriority;
 import gg.vape.event.impl.EventBedBreakerUpdate;
+import gg.vape.event.impl.EventMotion;
+import gg.vape.event.impl.EventPostLocalPlayerTick;
+import gg.vape.event.impl.EventPreLocalPlayerTick;
+import gg.vape.event.impl.EventPreMotion;
 import gg.vape.event.impl.EventRender3D;
+import gg.vape.event.impl.EventSendClickBlockToController;
 import gg.vape.module.Category;
 import gg.vape.module.Mod;
 import gg.vape.module.control.SharedModuleControlClaims;
@@ -12,12 +19,16 @@ import gg.vape.module.world.bedbreaker.BedCoverTarget;
 import gg.vape.module.world.bedbreaker.BedCoverTargetSelector;
 import gg.vape.module.world.bedbreaker.BedTargetRenderPosition;
 import gg.vape.module.world.bedbreaker.BedTargetRenderState;
+import gg.vape.movement.MovementInputHelper;
 import gg.vape.unmap.ModeOption;
 import gg.vape.unmap.ModeSelection;
+import gg.vape.rotation.RotationAngles;
+import gg.vape.rotation.RotationManager;
 import gg.vape.utils.BlockUtil;
 import gg.vape.utils.MathUtil;
 import gg.vape.utils.PlayerSimulationUtil;
 import gg.vape.utils.RotationUtil;
+import gg.vape.utils.RotationVectorMath;
 import gg.vape.utils.Vec3d;
 import gg.vape.utils.render.GuiRenderPrimitives;
 import gg.vape.utils.render.OpenGlBackendHolder;
@@ -30,6 +41,8 @@ import gg.vape.wrapper.impl.BlockPos;
 import gg.vape.wrapper.impl.EntityOtherPlayerMP;
 import gg.vape.wrapper.impl.EntityPlayerSP;
 import gg.vape.wrapper.impl.EnumFacing;
+import gg.vape.wrapper.impl.GameSettings;
+import gg.vape.wrapper.impl.KeyBinding;
 import gg.vape.wrapper.impl.Minecraft;
 import gg.vape.wrapper.impl.RayTraceResult;
 import gg.vape.wrapper.impl.RayTraceResult_type;
@@ -47,6 +60,14 @@ extends Mod {
     private World lastWorld;
     private BedTargetRenderState selectedTarget;
     private BedTargetRenderState lastProgressTarget;
+    private BlockPos serverRotationTarget;
+    private boolean movementFixActive;
+    private boolean movementKeysRemapped;
+    private float savedMovementFixYaw;
+    private boolean savedForwardKeyState;
+    private boolean savedBackKeyState;
+    private boolean savedLeftKeyState;
+    private boolean savedRightKeyState;
     private static final long MODULE_ID = -5914606721811702784L;
     private final ModeOption normalMode = new ModeOption("Normal");
     private final ModeOption hypixelMode = new ModeOption("Hypixel");
@@ -172,6 +193,8 @@ extends Mod {
     public void onBedBreakerUpdate(EventBedBreakerUpdate eventBedBreakerUpdate) {
         if (this.selectedTarget == null) {
             SharedModuleControlClaims.mouseOverUpdate.clearClaimed();
+            this.serverRotationTarget = null;
+            this.restoreMovementFix(Minecraft.thePlayer());
             return;
         }
         WorldClient world = Minecraft.theWorld();
@@ -187,6 +210,113 @@ extends Mod {
         BlockPos targetPosition = coverTarget == null
                 ? this.createBedPosition(this.selectedTarget) : coverTarget.getBlockPosition();
         this.updateMouseOver(this.selectedTarget, targetPosition);
+    }
+
+    @EventHandler
+    public void onSendClickBlockToController(EventSendClickBlockToController event) {
+        if (!this.isHypixelMode() || this.selectedTarget == null
+                || !SharedModuleControlClaims.mouseOverUpdate.isClaimed()) {
+            this.serverRotationTarget = null;
+            return;
+        }
+        BedCoverTarget coverTarget = this.selectedTarget.getCoverTarget();
+        this.serverRotationTarget = coverTarget == null ? null : coverTarget.getBlockPosition();
+    }
+
+    private RotationAngles computeServerRotationAngles(EntityPlayerSP player) {
+        Vec3 eyePosition = player.O(0.0f);
+        Vec3 targetPosition = Vec3.create(
+                (double)this.serverRotationTarget.getX() + 0.5,
+                (double)this.serverRotationTarget.getY() + 0.5,
+                (double)this.serverRotationTarget.getZ() + 0.5);
+        RotationAngles rotationAngles = RotationVectorMath.H(eyePosition, targetPosition, player.J(), false);
+        float playerYaw = player.J();
+        float yaw = playerYaw + MathUtil.wrapAngleTo180(rotationAngles.getYaw() - playerYaw);
+        return new RotationAngles(yaw, rotationAngles.getPitch());
+    }
+
+    @EventHandler
+    public void onPreMotion(EventPreMotion event) {
+        if (!this.isHypixelMode() || this.serverRotationTarget == null) {
+            return;
+        }
+        EntityPlayerSP player = Minecraft.thePlayer();
+        if (player.isNull()) {
+            return;
+        }
+        RotationAngles rotationAngles = this.computeServerRotationAngles(player);
+        EventMotion.setRotationYaw(rotationAngles.getYaw());
+        EventMotion.setRotationPitch(rotationAngles.getPitch());
+    }
+
+    @EventHandler(priority=EventPriority.LOWEST)
+    public void onPreLocalPlayerTick(EventPreLocalPlayerTick event) {
+        EntityPlayerSP player = event.getPlayer();
+        if (!this.isHypixelMode() || this.serverRotationTarget == null
+                || RotationManager.INSTANCE.hasAdaptiveController()
+                || player.isNull() || Minecraft.currentScreen().isNotNull()) {
+            this.restoreMovementFix(player);
+            return;
+        }
+        GameSettings settings = Minecraft.gameSettings();
+        KeyBinding forwardKey = settings.Y();
+        KeyBinding leftKey = settings.g$src$Lgg_vape_wrapper_impl_KeyBinding_$qqn5n3();
+        KeyBinding rightKey = settings.x$src$Lgg_vape_wrapper_impl_KeyBinding_$1cf7isg();
+        KeyBinding backKey = settings.s();
+        boolean forward = ClientSettings.isPhysicalKeyDown(forwardKey);
+        boolean left = ClientSettings.isPhysicalKeyDown(leftKey);
+        boolean right = ClientSettings.isPhysicalKeyDown(rightKey);
+        boolean back = ClientSettings.isPhysicalKeyDown(backKey);
+        boolean movementActive = forward || left || right || back;
+        RotationAngles rotationAngles = this.computeServerRotationAngles(player);
+        float targetYaw = rotationAngles.getYaw();
+        this.savedMovementFixYaw = player.J();
+        player.H(targetYaw);
+        player.z(targetYaw);
+        this.movementFixActive = true;
+        if (!movementActive) {
+            return;
+        }
+        float movementYaw = RotationManager.INSTANCE.adjustMovementYaw(this.savedMovementFixYaw, forward, left, right, back);
+        float relativeMovementYaw = MathUtil.wrapAngleTo180(MathUtil.wrapAngleTo180(targetYaw) - movementYaw);
+        float relativeMovementRadians = relativeMovementYaw * ((float)Math.PI / 180);
+        float forwardProjection = (float)Math.cos(relativeMovementRadians);
+        float leftProjection = (float)(-Math.sin(relativeMovementRadians));
+        double movementThreshold = 0.4;
+        boolean pressForward = (double)forwardProjection >= movementThreshold;
+        boolean pressLeft = (double)leftProjection >= movementThreshold;
+        boolean pressRight = (double)leftProjection <= -movementThreshold;
+        boolean pressBack = (double)forwardProjection <= -movementThreshold;
+        this.savedForwardKeyState = forwardKey.isKeyDown();
+        this.savedLeftKeyState = leftKey.isKeyDown();
+        this.savedRightKeyState = rightKey.isKeyDown();
+        this.savedBackKeyState = backKey.isKeyDown();
+        forwardKey.setPressed(pressForward);
+        leftKey.setPressed(pressLeft);
+        rightKey.setPressed(pressRight);
+        backKey.setPressed(pressBack);
+        this.movementKeysRemapped = true;
+    }
+
+    @EventHandler(priority=EventPriority.LOWEST)
+    public void onPostLocalPlayerTick(EventPostLocalPlayerTick event) {
+        this.restoreMovementFix(event.getPlayer());
+    }
+
+    private void restoreMovementFix(EntityPlayerSP player) {
+        if (this.movementFixActive && player != null && player.isNotNull()) {
+            player.H(this.savedMovementFixYaw);
+            player.z(this.savedMovementFixYaw);
+            this.movementFixActive = false;
+        }
+        if (this.movementKeysRemapped) {
+            GameSettings settings = Minecraft.gameSettings();
+            MovementInputHelper.synchronizeKeyState(settings.Y(), this.savedForwardKeyState);
+            MovementInputHelper.synchronizeKeyState(settings.g$src$Lgg_vape_wrapper_impl_KeyBinding_$qqn5n3(), this.savedLeftKeyState);
+            MovementInputHelper.synchronizeKeyState(settings.x$src$Lgg_vape_wrapper_impl_KeyBinding_$1cf7isg(), this.savedRightKeyState);
+            MovementInputHelper.synchronizeKeyState(settings.s(), this.savedBackKeyState);
+            this.movementKeysRemapped = false;
+        }
     }
 
     private void updateMouseOver(BedTargetRenderState renderState, BlockPos blockPos) {
@@ -295,6 +425,8 @@ extends Mod {
         }
         this.selectedTarget = null;
         this.lastProgressTarget = null;
+        this.serverRotationTarget = null;
+        this.restoreMovementFix(Minecraft.thePlayer());
         SharedModuleControlClaims.mouseOverUpdate.clearClaimed();
     }
 }

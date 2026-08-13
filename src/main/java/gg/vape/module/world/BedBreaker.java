@@ -7,8 +7,14 @@ import gg.vape.event.impl.EventRender3D;
 import gg.vape.module.Category;
 import gg.vape.module.Mod;
 import gg.vape.module.control.SharedModuleControlClaims;
+import gg.vape.module.world.bedbreaker.BedBreakPhase;
+import gg.vape.module.world.bedbreaker.BedCoverTarget;
+import gg.vape.module.world.bedbreaker.BedCoverTargetSelector;
 import gg.vape.module.world.bedbreaker.BedTargetRenderPosition;
 import gg.vape.module.world.bedbreaker.BedTargetRenderState;
+import gg.vape.unmap.ModeOption;
+import gg.vape.unmap.ModeSelection;
+import gg.vape.utils.BlockUtil;
 import gg.vape.utils.MathUtil;
 import gg.vape.utils.PlayerSimulationUtil;
 import gg.vape.utils.RotationUtil;
@@ -16,6 +22,7 @@ import gg.vape.utils.Vec3d;
 import gg.vape.utils.render.GuiRenderPrimitives;
 import gg.vape.utils.render.OpenGlBackendHolder;
 import gg.vape.utils.render.RenderUtils;
+import gg.vape.value.ModeValue;
 import gg.vape.wrapper.impl.AxisAlignedBB;
 import gg.vape.wrapper.impl.Block;
 import gg.vape.wrapper.impl.BlockBed;
@@ -39,7 +46,11 @@ public class BedBreaker
 extends Mod {
     private World lastWorld;
     private BedTargetRenderState selectedTarget;
+    private BedTargetRenderState lastProgressTarget;
     private static final long MODULE_ID = -5914606721811702784L;
+    private final ModeOption normalMode = new ModeOption("Normal");
+    private final ModeOption hypixelMode = new ModeOption("Hypixel");
+    private final ModeValue mode;
     private final List<BedTargetRenderPosition> targets = new CopyOnWriteArrayList<BedTargetRenderPosition>();
     private final HashMap<BedTargetRenderPosition, BedTargetRenderState> renderStates = new HashMap();
 
@@ -86,11 +97,26 @@ extends Mod {
 
     public BedBreaker() {
         super("BedBreaker", (int)MODULE_ID, Category.WORLD, "Allows you to break beds through walls\n\u00a7cWarning: This behavior is normally impossible and may be detected on servers");
+        this.mode = ModeValue.create((Object)this, "Mode", (ModeSelection)this.normalMode,
+                this.normalMode, this.hypixelMode);
+        this.addValue(this.mode);
+        this.mode.addChangeListener(this::onModeChanged);
     }
 
     @EventHandler
     public void onRender3D(EventRender3D eventRender3D) {
         WorldClient worldClient = Minecraft.theWorld();
+        EntityPlayerSP player = Minecraft.thePlayer();
+        if (worldClient.isNull() || player.isNull()) {
+            this.clearTargetingState();
+            return;
+        }
+        if (this.lastWorld != null && !worldClient.equals(this.lastWorld)) {
+            this.targets.clear();
+            this.resetRenderStates();
+            this.clearTargetingState();
+            return;
+        }
         ArrayList<BedTargetRenderState> activeRenderStates = new ArrayList<BedTargetRenderState>();
         for (BedTargetRenderPosition bedTargetRenderPosition : this.targets) {
             boolean isFoot;
@@ -109,6 +135,9 @@ extends Mod {
                 this.renderStates.put(bedTargetRenderPosition, renderState);
             }
             renderState.updateProjectedBounds();
+            if (this.isHypixelMode()) {
+                this.updateHypixelState(worldClient, player, renderState);
+            }
             activeRenderStates.add(renderState);
         }
         OpenGlBackendHolder.backend.pushMatrix();
@@ -119,7 +148,12 @@ extends Mod {
         double reticleSize = 20.0;
         RectData rectData = new RectData((double)(Minecraft.J() / 2) - reticleSize / 2.0, (double)(Minecraft.h() / 2) - reticleSize / 2.0, reticleSize, reticleSize);
         for (BedTargetRenderState bedTargetRenderState : activeRenderStates) {
-            bedTargetRenderState.renderIndicator(rectData, this.selectedTarget == bedTargetRenderState, Minecraft.playerController().c());
+            boolean selected = this.selectedTarget == bedTargetRenderState;
+            float breakProgress = selected && this.lastProgressTarget == bedTargetRenderState
+                    ? Minecraft.playerController().c() : 0.0f;
+            BedCoverTarget coverTarget = this.isHypixelMode() ? bedTargetRenderState.getCoverTarget() : null;
+            bedTargetRenderState.renderIndicator(rectData, selected, breakProgress,
+                    coverTarget == null ? null : coverTarget.getToolStack());
         }
         BedTargetRenderState selectedState = null;
         for (BedTargetRenderState candidateState : activeRenderStates) {
@@ -127,6 +161,7 @@ extends Mod {
             selectedState = candidateState;
         }
         this.selectedTarget = selectedState;
+        this.lastProgressTarget = selectedState;
         OpenGlBackendHolder.backend.popMatrix();
         RenderUtils.f();
         GuiRenderPrimitives.D();
@@ -139,10 +174,25 @@ extends Mod {
             SharedModuleControlClaims.mouseOverUpdate.clearClaimed();
             return;
         }
-        int blockX = this.selectedTarget.getTargetPosition().getBlockX();
-        int blockY = this.selectedTarget.getTargetPosition().getBlockY();
-        int blockZ = this.selectedTarget.getTargetPosition().getBlockZ();
-        BlockPos blockPos = BlockPos.create(blockX, blockY, blockZ);
+        WorldClient world = Minecraft.theWorld();
+        EntityPlayerSP player = Minecraft.thePlayer();
+        if (world.isNull() || player.isNull() || !this.isBed(this.selectedTarget, world)) {
+            this.clearTargetingState();
+            return;
+        }
+        if (this.isHypixelMode()) {
+            this.updateHypixelState(world, player, this.selectedTarget);
+        }
+        BedCoverTarget coverTarget = this.isHypixelMode() ? this.selectedTarget.getCoverTarget() : null;
+        BlockPos targetPosition = coverTarget == null
+                ? this.createBedPosition(this.selectedTarget) : coverTarget.getBlockPosition();
+        this.updateMouseOver(this.selectedTarget, targetPosition);
+    }
+
+    private void updateMouseOver(BedTargetRenderState renderState, BlockPos blockPos) {
+        int blockX = blockPos.getX();
+        int blockY = blockPos.getY();
+        int blockZ = blockPos.getZ();
         AxisAlignedBB axisAlignedBB = AxisAlignedBB.create(blockX, blockY, blockZ, blockX + 1, blockY + 1, blockZ + 1);
         EnumFacing enumFacing = null;
         EntityOtherPlayerMP entityOtherPlayerMP = PlayerSimulationUtil.y();
@@ -165,7 +215,7 @@ extends Mod {
                 enumFacing = enumFacing2;
             }
         }
-        this.selectedTarget.setObstructionPoint(vec3d);
+        renderState.setObstructionPoint(vec3d);
         Vec3 vec3 = Minecraft.F().O(1.0f);
         double eyeDist = vec3.distanceTo(vec3d.toVec3());
         if (eyeDist < 4.5) {
@@ -179,6 +229,72 @@ extends Mod {
 
     @Override
     public void onEnable() {
+        this.clearTargetingState();
         this.v(50L, true);
+    }
+
+    @Override
+    public void onDisable() {
+        this.clearTargetingState();
+    }
+
+    @Override
+    public String getSimpleSuffix() {
+        return this.mode.getDisplayValue();
+    }
+
+    private void onModeChanged(ModeValue changedMode) {
+        this.resetRenderStates();
+        this.clearTargetingState();
+    }
+
+    private boolean isHypixelMode() {
+        return ((ModeSelection)this.mode.getValue()).equals(this.hypixelMode);
+    }
+
+    private void updateHypixelState(WorldClient world, EntityPlayerSP player,
+                                    BedTargetRenderState renderState) {
+        if (renderState.getBreakPhase() == BedBreakPhase.UNRESOLVED) {
+            renderState.resolveCoverTarget(BedCoverTargetSelector.select(
+                    world, player, renderState.getTargetPosition()));
+        }
+        BedCoverTarget coverTarget = renderState.getCoverTarget();
+        if (coverTarget == null) {
+            return;
+        }
+        BlockPos coverPosition = coverTarget.getBlockPosition();
+        Block coverBlock = world.getBlockByPos(
+                coverPosition.getX(), coverPosition.getY(), coverPosition.getZ());
+        if (!BlockUtil.p(coverBlock)) {
+            return;
+        }
+        renderState.finishCover();
+        this.lastProgressTarget = null;
+    }
+
+    private boolean isBed(BedTargetRenderState renderState, WorldClient world) {
+        BedTargetRenderPosition position = renderState.getTargetPosition();
+        return BlockUtil.f(world.getBlockByPos(
+                position.getBlockX(), position.getBlockY(), position.getBlockZ()));
+    }
+
+    private BlockPos createBedPosition(BedTargetRenderState renderState) {
+        BedTargetRenderPosition position = renderState.getTargetPosition();
+        return BlockPos.create(position.getBlockX(), position.getBlockY(), position.getBlockZ());
+    }
+
+    private void resetRenderStates() {
+        for (BedTargetRenderState renderState : this.renderStates.values()) {
+            renderState.resetBreakState();
+        }
+    }
+
+    private void clearTargetingState() {
+        if (this.selectedTarget != null) {
+            this.selectedTarget.setObstructionPoint(null);
+        }
+        this.selectedTarget = null;
+        this.lastProgressTarget = null;
+        SharedModuleControlClaims.mouseOverUpdate.clearClaimed();
     }
 }

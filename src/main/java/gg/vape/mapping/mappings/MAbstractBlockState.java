@@ -1,5 +1,6 @@
 package gg.vape.mapping.mappings;
 
+import gg.vape.Vape;
 import gg.vape.mapping.MappedClasses;
 import gg.vape.mapping.Mapping;
 import gg.vape.mapping.MappingMethod;
@@ -11,6 +12,7 @@ public class MAbstractBlockState
 extends Mapping {
     private MappingMethod getShapeMethod;
     private MappingMethod isSuffocatingMethod;
+    private MappingMethod destroyProgressMethod;
 
     public MAbstractBlockState() {
         this(BlockData.W());
@@ -18,6 +20,16 @@ extends Mapping {
 
     private MAbstractBlockState(String[] controlFlowState) {
         super(MappedClasses.Fj);
+        String destroyProgressMethodName;
+        if (ForgeVersion.MC_1_17.v()) {
+            destroyProgressMethodName = "getPlayerRelativeBlockHardness";
+        } else if (Vape.INSTANCE.isVanillaMinecraftPresent()) {
+            destroyProgressMethodName = "getDestroyProgress";
+        } else {
+            destroyProgressMethodName = "m_60625_";
+        }
+        this.destroyProgressMethod = this.Y(destroyProgressMethodName, true, Float.TYPE,
+                MappedClasses.Yl, MappedClasses.zJ, MappedClasses.lf);
         if (controlFlowState != null) {
             if (ForgeVersion.MC_1_20_6.d()) {
                 this.getShapeMethod = this.Y("getShape", true, MappedClasses.la, new Class[]{MappedClasses.zJ, MappedClasses.lf});
@@ -36,6 +48,10 @@ extends Mapping {
 
     public boolean isSuffocating(Object blockState, Object blockReader, Object blockPosition) {
         return this.isSuffocatingMethod.invokeBoolean(blockState, blockReader, blockPosition);
+    }
+
+    public float getDestroyProgress(Object blockState, Object player, Object blockReader, Object blockPosition) {
+        return this.destroyProgressMethod.invokeFloat(blockState, player, blockReader, blockPosition);
     }
 
 }

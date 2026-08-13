@@ -19,6 +19,7 @@ extends Mapping {
     private MappingMethod X;
     private MappingMethod l;
     private MappingField B;
+    private MappingMethod playerRelativeBlockHardnessMethod;
 
     private Object t(Object object) {
         return this.X.invokeObject(object, new Object[0]);
@@ -66,6 +67,10 @@ extends Mapping {
         MIBlockState mIBlockState = this;
         this.O = this.Y(string, bl, clazz, classArray);
         int[] nArray2 = nArray;
+        if (ForgeVersion.MC_1_12_2.d() && ForgeVersion.MC_1_16_5.v()) {
+            this.playerRelativeBlockHardnessMethod = this.Y("getPlayerRelativeBlockHardness", true, Float.TYPE,
+                    MappedClasses.Yl, MappedClasses.YU, MappedClasses.lf);
+        }
         if (ForgeVersion.MC_1_20_6.d()) {
             Class[] classArray2 = new Class[]{MappedClasses.FN};
             Class<Comparable> clazz2 = Comparable.class;
@@ -132,6 +137,10 @@ extends Mapping {
 
     public static void W(int[] nArray) {
         M = nArray;
+    }
+
+    public float getPlayerRelativeBlockHardness(Object blockState, Object player, Object world, Object blockPos) {
+        return this.playerRelativeBlockHardnessMethod.invokeFloat(blockState, player, world, blockPos);
     }
 
     public Object o(Object object, Object object2) {

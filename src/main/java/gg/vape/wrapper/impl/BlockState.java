@@ -39,6 +39,19 @@ extends Wrapper {
         return new Block(BlockState.vapeInstance.getMappings().DE.v(this.I));
     }
 
+    public float getPlayerRelativeDestroyProgress(EntityPlayer player, World world, BlockPos blockPos) {
+        if (ForgeVersion.MC_1_16_5.d()) {
+            return BlockState.vapeInstance.getMappings().CJ.getDestroyProgress(
+                    this.I, player.getObject(), world.getObject(), blockPos.getObject());
+        }
+        if (ForgeVersion.MC_1_12_2.d()) {
+            return BlockState.vapeInstance.getMappings().DE.getPlayerRelativeBlockHardness(
+                    this.I, player.getObject(), world.getObject(), blockPos.getObject());
+        }
+        return BlockState.vapeInstance.getMappings().qg.getPlayerRelativeBlockHardness(
+                this.getBlock().getObject(), player.getObject(), world.getObject(), blockPos.getObject());
+    }
+
     public BlockState(Object object) {
         super(object);
     }

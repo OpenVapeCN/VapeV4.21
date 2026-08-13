@@ -6,8 +6,10 @@ import gg.vape.module.world.bedbreaker.BedTargetRenderPosition;
 import gg.vape.utils.TimerUtil;
 import gg.vape.utils.Vec3d;
 import gg.vape.utils.render.GuiRenderPrimitives;
+import gg.vape.utils.render.ItemIconRenderer;
 import gg.vape.utils.render.RenderUtil;
 import gg.vape.wrapper.impl.AxisAlignedBB;
+import gg.vape.wrapper.impl.ItemStack;
 import gg.vape.wrapper.impl.Minecraft;
 import gg.vape.wrapper.impl.RenderWorldLastEvent;
 import gg.vape.wrapper.impl.Vec3;
@@ -19,6 +21,8 @@ public class BedTargetRenderState {
     private float visibilityProgress = 0.0f;
     private boolean insideReticle;
     private Vec3d obstructionPoint;
+    private BedBreakPhase breakPhase = BedBreakPhase.UNRESOLVED;
+    private BedCoverTarget coverTarget;
     private final TimerUtil animationTimer = new TimerUtil();
 
     private void setInsideReticle(boolean insideReticle) {
@@ -33,7 +37,7 @@ public class BedTargetRenderState {
         return this.targetPosition;
     }
 
-    public void renderIndicator(RectData rectData, boolean selected, float breakProgress) {
+    public void renderIndicator(RectData rectData, boolean selected, float breakProgress, ItemStack toolIcon) {
         Vec3 playerView = Minecraft.F().O(1.0f);
         double targetDistance = playerView.distanceTo(new Vec3d((double)this.targetPosition.getBlockX() + 0.5, (double)this.targetPosition.getBlockY() + 0.5, (double)this.targetPosition.getBlockZ() + 0.5).toVec3());
         float renderResolutionMultiplier = RenderWorldLastEvent.getRenderResolutionMultiplier();
@@ -81,6 +85,12 @@ public class BedTargetRenderState {
                 GuiRenderPrimitives.p(indicatorX, indicatorY, indicatorSize, indicatorSize * 0.12f, 1.0f, 270.0f, -breakDegrees, new Color(10, 100 + greenBoost, 10, 255));
             }
         }
+        if (toolIcon != null && toolIcon.isNotNull()) {
+            float iconSize = Math.min(16.0f, indicatorSize * 0.55f);
+            float iconX = indicatorX + (indicatorSize - iconSize) / 2.0f;
+            float iconY = indicatorY + (indicatorSize - iconSize) / 2.0f;
+            ItemIconRenderer.renderItemStack(toolIcon, iconX, iconY, (int)iconSize, (int)iconSize, distanceFade);
+        }
     }
 
     public float getVisibilityProgress() {
@@ -89,6 +99,30 @@ public class BedTargetRenderState {
 
     public BedTargetRenderState(BedTargetRenderPosition bedTargetRenderPosition) {
         this.targetPosition = bedTargetRenderPosition;
+    }
+
+    public BedBreakPhase getBreakPhase() {
+        return this.breakPhase;
+    }
+
+    public BedCoverTarget getCoverTarget() {
+        return this.coverTarget;
+    }
+
+    public void resolveCoverTarget(BedCoverTarget coverTarget) {
+        this.coverTarget = coverTarget;
+        this.breakPhase = coverTarget == null ? BedBreakPhase.BED : BedBreakPhase.COVER;
+    }
+
+    public void finishCover() {
+        this.coverTarget = null;
+        this.breakPhase = BedBreakPhase.BED;
+    }
+
+    public void resetBreakState() {
+        this.coverTarget = null;
+        this.breakPhase = BedBreakPhase.UNRESOLVED;
+        this.obstructionPoint = null;
     }
 
     public void updateVisibilityAnimation() {

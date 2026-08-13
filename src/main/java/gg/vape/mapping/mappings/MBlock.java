@@ -42,6 +42,7 @@ extends Mapping {
     private MappingMethod F;
     private final MappingField Q;
     public MappingMethod X;
+    private MappingMethod playerRelativeBlockHardnessMethod;
 
     public int h(Object object) {
         return this.n.invokeInt(null, object);
@@ -245,6 +246,10 @@ extends Mapping {
     private MBlock(GuiComponent[] guiComponentArray) {
         super(MappedClasses.Zk);
         GuiComponent[] guiComponentArray2 = guiComponentArray;
+        if (ForgeVersion.MC_1_8_9.L()) {
+            this.playerRelativeBlockHardnessMethod = this.Y("getPlayerRelativeBlockHardness", true, Float.TYPE,
+                    MappedClasses.Yl, MappedClasses.YU, MappedClasses.lf);
+        }
         if (ForgeVersion.MC_1_20_6.v()) {
             Class<Float> clazz = Float.TYPE;
             boolean bl = true;
@@ -689,6 +694,10 @@ extends Mapping {
 
     private float T(Object object) {
         return this.Q.getFloat(object);
+    }
+
+    public float getPlayerRelativeBlockHardness(Object block, Object player, Object world, Object blockPos) {
+        return this.playerRelativeBlockHardnessMethod.invokeFloat(block, player, world, blockPos);
     }
 }
 
